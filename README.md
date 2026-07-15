@@ -49,8 +49,8 @@
 最快方式运行 DBStudio：
 
 ```bash
-# 克隆仓库（请将 URL 替换为你自己的仓库地址）
-git clone <你的仓库地址>
+# 克隆仓库
+git clone https://github.com/zibin924-glitch/dbstudio.git
 cd dbstudio
 
 # 构建并启动前后端服务
