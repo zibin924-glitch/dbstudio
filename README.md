@@ -223,6 +223,10 @@ dbstudio/
 │   ├── nginx.conf
 │   └── Dockerfile
 ├── docker-compose.yml
+├── docs/
+│   ├── 数据库开发工具需求规格说明书.md
+│   ├── DBStudio项目整体计划.md
+│   └── DBStudio测试计划与用例文档.md
 └── README.md
 ```
 
@@ -250,6 +254,18 @@ dbstudio/
 | POST | `/api/generator/ddl` | 根据表元数据生成 DDL |
 | GET | `/api/gateway/{id}` | 调用已发布的 API 接口 |
 | GET | `/api/health` | 健康检查 |
+
+---
+
+## 项目文档
+
+项目完整文档存放在 `docs/` 目录下：
+
+| 文档 | 说明 |
+|------|------|
+| [数据库开发工具需求规格说明书](docs/数据库开发工具需求规格说明书.md) | 完整的功能需求定义，涵盖连接管理、结构浏览、SQL 查询、代码生成、API 网关五大模块 |
+| [DBStudio 项目整体计划](docs/DBStudio项目整体计划.md) | 三阶段开发计划（MVP → 增强 → 高级），含 Sprint 分解、甘特图、风险管理、附录 C 开发完成状态 |
+| [DBStudio 测试计划与用例文档](docs/DBStudio测试计划与用例文档.md) | 测试策略、环境搭建、150+ 测试用例定义，第九章包含实际执行结果（82 个测试全部通过） |
 
 ---
 
