@@ -187,6 +187,112 @@
                 </div>
               </div>
             </el-tab-pane>
+
+            <!-- Monitoring Tab -->
+            <el-tab-pane label="Monitoring" name="monitoring">
+              <div class="monitoring-panel">
+                <!-- Statistics Section -->
+                <h4 class="section-subtitle">Statistics</h4>
+                <div class="stats-cards" v-loading="statsLoading">
+                  <el-row :gutter="16">
+                    <el-col :span="6">
+                      <el-card shadow="never" class="stat-card">
+                        <el-statistic title="Total Calls" :value="apiStats.total_calls ?? 0" />
+                      </el-card>
+                    </el-col>
+                    <el-col :span="6">
+                      <el-card shadow="never" class="stat-card">
+                        <el-statistic title="Success Rate" :value="apiStats.success_rate ?? 0" suffix="%" :precision="1" />
+                      </el-card>
+                    </el-col>
+                    <el-col :span="6">
+                      <el-card shadow="never" class="stat-card">
+                        <el-statistic title="Avg Response Time" :value="apiStats.avg_response_time ?? 0" suffix="ms" :precision="1" />
+                      </el-card>
+                    </el-col>
+                    <el-col :span="6">
+                      <el-card shadow="never" class="stat-card">
+                        <el-statistic title="Calls Today" :value="apiStats.calls_today ?? 0" />
+                      </el-card>
+                    </el-col>
+                  </el-row>
+                </div>
+
+                <!-- Call Logs Section -->
+                <div class="logs-header">
+                  <h4 class="section-subtitle" style="margin-bottom: 0;">Call Logs</h4>
+                  <el-button size="small" @click="fetchMonitoringData" :loading="logsLoading" plain>
+                    <el-icon><Refresh /></el-icon>
+                    Refresh
+                  </el-button>
+                </div>
+                <el-table
+                  :data="apiLogs"
+                  stripe
+                  border
+                  size="small"
+                  v-loading="logsLoading"
+                  style="width: 100%; margin-top: 10px;"
+                  max-height="360"
+                  empty-text="No call logs yet"
+                >
+                  <el-table-column prop="timestamp" label="Timestamp" min-width="170">
+                    <template #default="{ row }">
+                      {{ row.timestamp || row.created_at || '-' }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="method" label="Method" width="90" align="center">
+                    <template #default="{ row }">
+                      <el-tag :type="getMethodType(row.method)" size="small">
+                        {{ row.method || '-' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="status_code" label="Status" width="90" align="center">
+                    <template #default="{ row }">
+                      <el-tag
+                        :type="(row.status_code >= 200 && row.status_code < 300) ? 'success' : (row.status_code >= 400 ? 'danger' : 'warning')"
+                        size="small"
+                      >
+                        {{ row.status_code || '-' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="response_time" label="Response Time" width="120" align="right">
+                    <template #default="{ row }">
+                      {{ row.response_time != null ? `${row.response_time}ms` : (row.duration_ms != null ? `${row.duration_ms}ms` : '-') }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="client_ip" label="Client IP" min-width="130">
+                    <template #default="{ row }">
+                      {{ row.client_ip || row.remote_addr || '-' }}
+                    </template>
+                  </el-table-column>
+                </el-table>
+
+                <!-- Regenerate Token Section -->
+                <div class="token-section">
+                  <el-divider />
+                  <div class="token-actions">
+                    <span class="token-label">API Token Management</span>
+                    <el-popconfirm
+                      title="Regenerating the token will invalidate the current token. Continue?"
+                      confirm-button-text="Regenerate"
+                      cancel-button-text="Cancel"
+                      @confirm="handleRegenerateToken"
+                      width="320"
+                    >
+                      <template #reference>
+                        <el-button type="warning" plain size="small" :loading="regenerating">
+                          <el-icon><RefreshRight /></el-icon>
+                          Regenerate Token
+                        </el-button>
+                      </template>
+                    </el-popconfirm>
+                  </div>
+                </div>
+              </div>
+            </el-tab-pane>
           </el-tabs>
         </template>
 
@@ -301,7 +407,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useConnectionStore } from '@/stores/connection.js'
 import {
@@ -311,7 +417,10 @@ import {
   deleteApi,
   toggleApi,
   extractParams,
-  callApi
+  callApi,
+  getApiLogs,
+  getApiStats,
+  regenerateToken
 } from '@/api/index.js'
 
 const connectionStore = useConnectionStore()
@@ -352,6 +461,24 @@ const apiFormRules = {
 const testParams = ref([{ key: '', value: '' }])
 const testLoading = ref(false)
 const testResponse = ref(null)
+
+// Monitoring state
+const apiLogs = ref([])
+const apiStats = reactive({
+  total_calls: 0,
+  success_rate: 0,
+  avg_response_time: 0,
+  calls_today: 0
+})
+const logsLoading = ref(false)
+const statsLoading = ref(false)
+const regenerating = ref(false)
+
+watch(detailTab, (newTab) => {
+  if (newTab === 'monitoring' && selectedApi.value) {
+    fetchMonitoringData()
+  }
+})
 
 const filteredApis = computed(() => {
   if (!searchQuery.value) return apiList.value
@@ -533,6 +660,67 @@ async function handleExtractParams() {
     }
   } catch (error) {
     ElMessage.error('Failed to extract parameters')
+  }
+}
+
+async function fetchMonitoringData() {
+  if (!selectedApi.value) return
+  await Promise.all([fetchApiLogs(), fetchApiStats()])
+}
+
+async function fetchApiLogs() {
+  if (!selectedApi.value) return
+  logsLoading.value = true
+  try {
+    const response = await getApiLogs(selectedApi.value.id)
+    const data = response.data || response || []
+    apiLogs.value = Array.isArray(data) ? data : (data.logs || data.items || [])
+  } catch (error) {
+    apiLogs.value = []
+  } finally {
+    logsLoading.value = false
+  }
+}
+
+async function fetchApiStats() {
+  if (!selectedApi.value) return
+  statsLoading.value = true
+  try {
+    const response = await getApiStats(selectedApi.value.id)
+    const data = response.data || response || {}
+    Object.assign(apiStats, {
+      total_calls: data.total_calls ?? 0,
+      success_rate: data.success_rate ?? 0,
+      avg_response_time: data.avg_response_time ?? 0,
+      calls_today: data.calls_today ?? 0
+    })
+  } catch (error) {
+    Object.assign(apiStats, {
+      total_calls: 0,
+      success_rate: 0,
+      avg_response_time: 0,
+      calls_today: 0
+    })
+  } finally {
+    statsLoading.value = false
+  }
+}
+
+async function handleRegenerateToken() {
+  if (!selectedApi.value) return
+  regenerating.value = true
+  try {
+    const response = await regenerateToken(selectedApi.value.id)
+    const data = response.data || response || {}
+    if (data.token) {
+      ElMessage.success('Token regenerated successfully')
+    } else {
+      ElMessage.success(data.message || 'Token regenerated')
+    }
+  } catch (error) {
+    ElMessage.error('Failed to regenerate token')
+  } finally {
+    regenerating.value = false
   }
 }
 
@@ -783,5 +971,52 @@ function getConnectionName(connId) {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* Monitoring Panel */
+.monitoring-panel {
+  padding: 0;
+}
+
+.stats-cards {
+  margin-bottom: 16px;
+}
+
+.stat-card {
+  text-align: center;
+}
+
+.stat-card :deep(.el-statistic__head) {
+  font-size: 12px;
+  color: #909399;
+}
+
+.stat-card :deep(.el-statistic__content) {
+  font-size: 22px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.logs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.token-section {
+  margin-top: 8px;
+}
+
+.token-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.token-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #606266;
 }
 </style>

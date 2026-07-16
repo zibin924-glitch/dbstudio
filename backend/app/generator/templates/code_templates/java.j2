@@ -1,0 +1,38 @@
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.Map;
+import java.util.UUID;
+
+import jakarta.persistence.*;
+
+@Entity
+@Table(name = "{{ table_name }}")
+public class {{ class_name }} {
+
+{% for col in columns %}
+{% if include_comments and col.comment %}
+    /** {{ col.comment }} */
+{% endif %}
+{% if col.is_pk %}
+    @Id
+{% if col.auto_increment %}
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+{% endif %}
+{% endif %}
+    @Column({{ col.col_annotations }})
+    private {{ col.java_type }} {{ col.field_name }};
+
+{% endfor %}
+{% for col in columns %}
+    public {{ col.java_type }} get{{ col.pascal_name }}() {
+        return {{ col.field_name }};
+    }
+
+    public void set{{ col.pascal_name }}({{ col.java_type }} {{ col.field_name }}) {
+        this.{{ col.field_name }} = {{ col.field_name }};
+    }
+
+{% endfor %}
+}

@@ -4,7 +4,7 @@ import logging
 import tempfile
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import inspect
@@ -18,6 +18,7 @@ from app.generator.code_generator import CodeGenerator
 from app.generator.ddl_converter import DDLConverter
 from app.generator.ddl_generator import DDLGenerator
 from app.generator.doc_generator import DocGenerator
+from app.utils.audit import log_audit
 from app.utils.responses import ErrorResponse, SuccessResponse
 
 logger = logging.getLogger(__name__)
@@ -195,15 +196,22 @@ async def generate_document(
             headers={"Content-Disposition": f"attachment; filename={db_name}_doc.docx"},
         )
     elif fmt == "pdf":
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmp:
-            DocGenerator.generate_pdf(tables_metadata, db_name, db_type, tmp.name)
-            with open(tmp.name, "rb") as f:
-                content = f.read()
-        return Response(
-            content=content,
-            media_type="text/html; charset=utf-8",
-            headers={"Content-Disposition": f"attachment; filename={db_name}_doc.html"},
+        content, actual_format = DocGenerator.generate_pdf_bytes(
+            tables_metadata, db_name, db_type
         )
+        if actual_format == "pdf":
+            return Response(
+                content=content,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename={db_name}_doc.pdf"},
+            )
+        else:
+            # WeasyPrint not available — fallback to HTML
+            return Response(
+                content=content,
+                media_type="text/html; charset=utf-8",
+                headers={"Content-Disposition": f"attachment; filename={db_name}_doc.html"},
+            )
     else:
         return ErrorResponse(
             message=f"Unsupported format: '{fmt}'. Use markdown, docx, or pdf.",
@@ -252,6 +260,7 @@ async def generate_code(
 @router.post("/ddl", response_model=None)
 async def generate_ddl(
     req: DDLGenerateRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Generate DDL (CREATE TABLE) statements for the specified tables."""
@@ -278,6 +287,22 @@ async def generate_ddl(
         ddl_parts.append(ddl)
 
     combined = "\n\n".join(ddl_parts)
+
+    # Audit log for DDL export
+    await log_audit(
+        db,
+        action="create",
+        resource_type="ddl_export",
+        user_info=request.client.host if request.client else None,
+        details={
+            "connection_id": req.connection_id,
+            "tables": req.tables,
+            "include_indexes": req.include_indexes,
+            "include_foreign_keys": req.include_foreign_keys,
+        },
+    )
+    await db.commit()
+
     return SuccessResponse(data={"ddl": combined, "tables": req.tables})
 
 

@@ -1,10 +1,22 @@
 """Code generator - produces ORM/model code from database table metadata."""
 
 import logging
+import os
 import re
 from typing import Optional
 
+from jinja2 import Environment, FileSystemLoader
+
 logger = logging.getLogger(__name__)
+
+# Jinja2 template directory (code_templates/ subdirectory within the templates package)
+_TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates", "code_templates")
+_jinja_env = Environment(
+    loader=FileSystemLoader(_TEMPLATE_DIR),
+    keep_trailing_newline=True,
+    trim_blocks=True,
+    lstrip_blocks=True,
+)
 
 
 class TypeMapper:
@@ -285,61 +297,42 @@ class CodeGenerator:
 
     @staticmethod
     def _gen_sqlalchemy(table: dict, naming_style: str, include_comments: bool) -> str:
-        """Generate SQLAlchemy 2.0 model class."""
+        """Generate SQLAlchemy 2.0 model class using Jinja2 template."""
         table_name = table.get("name", "unknown")
         columns = table.get("columns", [])
         class_name = CodeGenerator._convert_name(table_name, "PascalCase")
 
-        lines = [
-            "from datetime import date, datetime, time",
-            "from decimal import Decimal",
-            "",
-            "from sqlalchemy import String, Integer, Float, Boolean, DateTime, Date, Time, Text, Numeric, JSON",
-            "from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column",
-            "",
-            "",
-            "class Base(DeclarativeBase):",
-            "    pass",
-            "",
-            "",
-            f'class {class_name}(Base):',
-            f'    __tablename__ = "{table_name}"',
-            "",
-        ]
-
+        enriched_columns = []
+        has_optional = False
         for col in columns:
-            col_name = col["name"]
             col_type = col["type"].upper()
             nullable = col.get("nullable", True)
             is_pk = col.get("primary_key", False)
-            default = col.get("default")
-            comment = col.get("comment", "")
-
-            sa_type = CodeGenerator._sqlalchemy_type(col_type)
             py_type = TypeMapper.map_type(col_type, "python")
-
-            # Build mapped_column arguments
-            args = [sa_type]
-            if is_pk:
-                args.append("primary_key=True")
             if nullable and not is_pk:
                 py_type = f"Optional[{py_type}]"
-                args.append("nullable=True")
-            else:
-                args.append("nullable=False")
-            if default is not None:
-                args.append(f"default={repr(default)}")
-            if include_comments and comment:
-                args.append(f'comment="{comment}"')
+                has_optional = True
 
-            args_str = ", ".join(args)
-            lines.append(f"    {col_name}: Mapped[{py_type}] = mapped_column({args_str})")
+            enriched_columns.append({
+                "name": col["name"],
+                "py_type": py_type,
+                "sa_type": CodeGenerator._sqlalchemy_type(col_type),
+                "is_pk": is_pk,
+                "nullable": nullable,
+                "default": col.get("default"),
+                "default_repr": repr(col.get("default")),
+                "comment": col.get("comment", ""),
+            })
 
-        if not columns:
-            lines.append("    pass")
-
-        lines.append("")
-        return "\n".join(lines)
+        template = _jinja_env.get_template("sqlalchemy.j2")
+        rendered = template.render(
+            table_name=table_name,
+            class_name=class_name,
+            columns=enriched_columns,
+            has_optional=has_optional,
+            include_comments=include_comments,
+        )
+        return rendered
 
     @staticmethod
     def _sqlalchemy_type(db_type: str) -> str:
@@ -382,20 +375,13 @@ class CodeGenerator:
 
     @staticmethod
     def _gen_django(table: dict, naming_style: str, include_comments: bool) -> str:
-        """Generate Django model class."""
+        """Generate Django model class using Jinja2 template."""
         table_name = table.get("name", "unknown")
         columns = table.get("columns", [])
         class_name = CodeGenerator._convert_name(table_name, "PascalCase")
 
-        lines = [
-            "from django.db import models",
-            "",
-            "",
-            f"class {class_name}(models.Model):",
-        ]
-
+        enriched_columns = []
         for col in columns:
-            col_name = col["name"]
             col_type = col["type"].upper()
             nullable = col.get("nullable", True)
             is_pk = col.get("primary_key", False)
@@ -423,17 +409,18 @@ class CodeGenerator:
                 else:
                     kwargs.insert(0, "max_length=255")
 
-            kwargs_str = ", ".join(kwargs)
-            if kwargs_str:
-                lines.append(f"    {col_name} = {dj_field}({kwargs_str})")
-            else:
-                lines.append(f"    {col_name} = {dj_field}()")
+            enriched_columns.append({
+                "name": col["name"],
+                "dj_field": dj_field,
+                "dj_kwargs": ", ".join(kwargs),
+            })
 
-        lines.append("")
-        lines.append("    class Meta:")
-        lines.append(f'        db_table = "{table_name}"')
-        lines.append("")
-        return "\n".join(lines)
+        template = _jinja_env.get_template("django.j2")
+        return template.render(
+            table_name=table_name,
+            class_name=class_name,
+            columns=enriched_columns,
+        )
 
     @staticmethod
     def _django_field_type(db_type: str) -> str:
@@ -471,24 +458,13 @@ class CodeGenerator:
 
     @staticmethod
     def _gen_pydantic(table: dict, naming_style: str, include_comments: bool) -> str:
-        """Generate Pydantic v2 model class."""
+        """Generate Pydantic v2 model class using Jinja2 template."""
         table_name = table.get("name", "unknown")
         columns = table.get("columns", [])
         class_name = CodeGenerator._convert_name(table_name, "PascalCase")
 
-        lines = [
-            "from datetime import date, datetime, time",
-            "from decimal import Decimal",
-            "from typing import Optional",
-            "",
-            "from pydantic import BaseModel, Field",
-            "",
-            "",
-            f"class {class_name}(BaseModel):",
-        ]
-
+        enriched_columns = []
         for col in columns:
-            col_name = col["name"]
             col_type = col["type"].upper()
             nullable = col.get("nullable", True)
             default = col.get("default")
@@ -509,103 +485,86 @@ class CodeGenerator:
             if include_comments and comment:
                 field_args.append(f'description="{comment}"')
 
-            args_str = ", ".join(field_args)
-            lines.append(f"    {col_name}: {py_type} = Field({args_str})")
+            enriched_columns.append({
+                "name": col["name"],
+                "py_type": py_type,
+                "field_args": ", ".join(field_args),
+            })
 
-        lines.append("")
-        lines.append('    model_config = {"from_attributes": True}')
-        lines.append("")
-        return "\n".join(lines)
+        template = _jinja_env.get_template("pydantic.j2")
+        return template.render(
+            table_name=table_name,
+            class_name=class_name,
+            columns=enriched_columns,
+        )
 
     @staticmethod
     def _gen_typescript(table: dict, naming_style: str, include_comments: bool) -> str:
-        """Generate TypeScript interface."""
+        """Generate TypeScript interface using Jinja2 template."""
         table_name = table.get("name", "unknown")
         columns = table.get("columns", [])
         interface_name = CodeGenerator._convert_name(table_name, "PascalCase")
 
-        lines = [f"export interface {interface_name} {{"]
-
+        enriched_columns = []
         for col in columns:
-            col_name = CodeGenerator._convert_name(col["name"], naming_style)
             col_type = col["type"].upper()
             nullable = col.get("nullable", True)
-            comment = col.get("comment", "")
+            enriched_columns.append({
+                "name": col["name"],
+                "converted_name": CodeGenerator._convert_name(col["name"], naming_style),
+                "ts_type": TypeMapper.map_type(col_type, "typescript"),
+                "nullable": nullable,
+                "comment": col.get("comment", ""),
+            })
 
-            ts_type = TypeMapper.map_type(col_type, "typescript")
-            optional = "?" if nullable else ""
-
-            if include_comments and comment:
-                lines.append(f"  /** {comment} */")
-
-            lines.append(f"  {col_name}{optional}: {ts_type};")
-
-        lines.append("}")
-        lines.append("")
-        return "\n".join(lines)
+        template = _jinja_env.get_template("typescript.j2")
+        return template.render(
+            class_name=interface_name,
+            columns=enriched_columns,
+            include_comments=include_comments,
+        )
 
     @staticmethod
     def _gen_go(table: dict, naming_style: str, include_comments: bool) -> str:
-        """Generate Go struct."""
+        """Generate Go struct using Jinja2 template."""
         table_name = table.get("name", "unknown")
         columns = table.get("columns", [])
         struct_name = CodeGenerator._convert_name(table_name, "PascalCase")
 
-        lines = [
-            "package models",
-            "",
-            'import "time"',
-            "",
-            f"type {struct_name} struct {{",
-        ]
-
+        enriched_columns = []
         for col in columns:
-            col_name = CodeGenerator._convert_name(col["name"], "PascalCase")
             col_type = col["type"].upper()
             nullable = col.get("nullable", True)
-            comment = col.get("comment", "")
-
             go_type = TypeMapper.map_type(col_type, "go")
             if nullable and go_type not in ("[]byte",):
                 go_type = f"*{go_type}"
 
-            tag = f'`json:"{col["name"]}" db:"{col["name"]}"`'
+            enriched_columns.append({
+                "name": col["name"],
+                "pascal_name": CodeGenerator._convert_name(col["name"], "PascalCase"),
+                "go_type": go_type,
+                "comment": col.get("comment", ""),
+            })
 
-            if include_comments and comment:
-                lines.append(f"    // {comment}")
-
-            lines.append(f"    {col_name} {go_type} {tag}")
-
-        lines.append("}")
-        lines.append("")
-        return "\n".join(lines)
+        template = _jinja_env.get_template("go.j2")
+        return template.render(
+            class_name=struct_name,
+            columns=enriched_columns,
+            include_comments=include_comments,
+        )
 
     @staticmethod
     def _gen_java(table: dict, naming_style: str, include_comments: bool) -> str:
-        """Generate Java entity class with Jakarta Persistence annotations."""
+        """Generate Java entity class with Jakarta Persistence annotations using Jinja2 template."""
         table_name = table.get("name", "unknown")
         columns = table.get("columns", [])
         class_name = CodeGenerator._convert_name(table_name, "PascalCase")
 
-        lines = [
-            "import java.math.BigDecimal;",
-            "import java.time.LocalDate;",
-            "import java.time.LocalDateTime;",
-            "import java.time.LocalTime;",
-            "import java.util.Map;",
-            "import java.util.UUID;",
-            "",
-            "import jakarta.persistence.*;",
-            "",
-            "@Entity",
-            f'@Table(name = "{table_name}")',
-            f"public class {class_name} {{",
-            "",
-        ]
-
+        enriched_columns = []
         for col in columns:
             col_name = col["name"]
             field_name = CodeGenerator._convert_name(col_name, "camelCase")
+            pascal_name = CodeGenerator._convert_name(col_name, "PascalCase")
             col_type = col["type"].upper()
             nullable = col.get("nullable", True)
             is_pk = col.get("primary_key", False)
@@ -613,15 +572,7 @@ class CodeGenerator:
 
             java_type = TypeMapper.map_type(col_type, "java")
 
-            if include_comments and comment:
-                lines.append(f"    /** {comment} */")
-
-            if is_pk:
-                lines.append("    @Id")
-                if col.get("auto_increment"):
-                    lines.append("    @GeneratedValue(strategy = GenerationType.IDENTITY)")
-
-            # Column annotation
+            # Build @Column annotation arguments
             col_annotations = [f'name = "{col_name}"']
             if not nullable:
                 col_annotations.append("nullable = false")
@@ -629,27 +580,21 @@ class CodeGenerator:
             if length_match and "CHAR" in col_type:
                 col_annotations.append(f"length = {length_match.group(1)}")
 
-            lines.append(f"    @Column({', '.join(col_annotations)})")
-            lines.append(f"    private {java_type} {field_name};")
-            lines.append("")
+            enriched_columns.append({
+                "name": col_name,
+                "field_name": field_name,
+                "pascal_name": pascal_name,
+                "java_type": java_type,
+                "is_pk": is_pk,
+                "auto_increment": col.get("auto_increment", False),
+                "col_annotations": ", ".join(col_annotations),
+                "comment": comment,
+            })
 
-        # Generate getters and setters
-        for col in columns:
-            col_name = col["name"]
-            field_name = CodeGenerator._convert_name(col_name, "camelCase")
-            col_type = col["type"].upper()
-            java_type = TypeMapper.map_type(col_type, "java")
-            method_name = CodeGenerator._convert_name(col_name, "PascalCase")
-
-            lines.append(f"    public {java_type} get{method_name}() {{")
-            lines.append(f"        return {field_name};")
-            lines.append("    }")
-            lines.append("")
-            lines.append(f"    public void set{method_name}({java_type} {field_name}) {{")
-            lines.append(f"        this.{field_name} = {field_name};")
-            lines.append("    }")
-            lines.append("")
-
-        lines.append("}")
-        lines.append("")
-        return "\n".join(lines)
+        template = _jinja_env.get_template("java.j2")
+        return template.render(
+            table_name=table_name,
+            class_name=class_name,
+            columns=enriched_columns,
+            include_comments=include_comments,
+        )

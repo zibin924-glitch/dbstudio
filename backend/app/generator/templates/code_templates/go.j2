@@ -1,0 +1,12 @@
+package models
+
+import "time"
+
+type {{ class_name }} struct {
+{% for col in columns %}
+{% if include_comments and col.comment %}
+    // {{ col.comment }}
+{% endif %}
+    {{ col.pascal_name }} {{ col.go_type }} `json:"{{ col.name }}" db:"{{ col.name }}"`
+{% endfor %}
+}

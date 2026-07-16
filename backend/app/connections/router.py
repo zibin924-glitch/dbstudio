@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connections.models import (
@@ -15,6 +15,7 @@ from app.connections.models import (
 from app.connections.pool import pool_manager
 from app.connections.service import ConnectionService
 from app.database.session import get_db
+from app.utils.audit import log_audit
 from app.utils.responses import ErrorResponse, SuccessResponse
 
 router = APIRouter(prefix="/connections", tags=["Connections"])
@@ -25,6 +26,7 @@ svc = ConnectionService()
 @router.post("/", response_model=None)
 async def create_connection(
     data: ConnectionCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new database connection.
@@ -34,6 +36,15 @@ async def create_connection(
     """
     try:
         result = await svc.create_connection(db, data)
+        await log_audit(
+            db,
+            action="create",
+            resource_type="connection",
+            resource_id=result.get("id"),
+            user_info=request.client.host if request.client else None,
+            details={"name": data.name, "db_type": data.db_type},
+        )
+        await db.commit()
         return SuccessResponse(data=result, message="Connection created successfully.", code=201)
     except Exception as exc:
         return ErrorResponse(message="Failed to create connection.", detail=str(exc))
@@ -71,6 +82,7 @@ async def get_connection(
 async def update_connection(
     connection_id: int,
     data: ConnectionUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Update an existing connection.
@@ -82,12 +94,22 @@ async def update_connection(
     if result is None:
         return ErrorResponse(message="Connection not found.", code=404)
     pool_manager.dispose_pool(connection_id)
+    await log_audit(
+        db,
+        action="update",
+        resource_type="connection",
+        resource_id=connection_id,
+        user_info=request.client.host if request.client else None,
+        details={"updated_fields": list(data.model_dump(exclude_unset=True).keys())},
+    )
+    await db.commit()
     return SuccessResponse(data=result, message="Connection updated successfully.")
 
 
 @router.delete("/{connection_id}", status_code=204)
 async def delete_connection(
     connection_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a connection by ID.
@@ -98,6 +120,14 @@ async def delete_connection(
     if not deleted:
         return ErrorResponse(message="Connection not found.", code=404)
     pool_manager.dispose_pool(connection_id)
+    await log_audit(
+        db,
+        action="delete",
+        resource_type="connection",
+        resource_id=connection_id,
+        user_info=request.client.host if request.client else None,
+    )
+    await db.commit()
     return None
 
 

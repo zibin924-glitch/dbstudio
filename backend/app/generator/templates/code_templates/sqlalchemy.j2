@@ -1,0 +1,23 @@
+from datetime import date, datetime, time
+from decimal import Decimal
+{% if has_optional %}
+from typing import Optional
+{% endif %}
+
+from sqlalchemy import String, Integer, BigInteger, Float, Boolean, DateTime, Date, Time, Text, Numeric, JSON
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class {{ class_name }}(Base):
+    __tablename__ = "{{ table_name }}"
+
+{% for col in columns %}
+    {{ col.name }}: Mapped[{{ col.py_type }}] = mapped_column({{ col.sa_type }}{% if col.is_pk %}, primary_key=True{% endif %}{% if col.nullable and not col.is_pk %}, nullable=True{% elif not col.is_pk %}, nullable=False{% endif %}{% if col.default is not none %}, default={{ col.default_repr }}{% endif %}{% if include_comments and col.comment %}, comment="{{ col.comment }}"{% endif %})
+{% endfor %}
+{% if not columns %}
+    pass
+{% endif %}

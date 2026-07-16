@@ -97,6 +97,30 @@ export function getStats(connectionId) {
   })
 }
 
+export function getProcedures(connectionId, schema) {
+  return apiClient.get(`/explorer/${connectionId}/procedures`, {
+    params: { schema }
+  })
+}
+
+export function getTriggers(connectionId, schema) {
+  return apiClient.get(`/explorer/${connectionId}/triggers`, {
+    params: { schema }
+  })
+}
+
+export function getFunctions(connectionId, schema) {
+  return apiClient.get(`/explorer/${connectionId}/functions`, {
+    params: { schema }
+  })
+}
+
+export function getSequences(connectionId, schema) {
+  return apiClient.get(`/explorer/${connectionId}/sequences`, {
+    params: { schema }
+  })
+}
+
 // ==========================================
 // Query APIs
 // ==========================================
@@ -168,6 +192,18 @@ export function extractParams(sql) {
 
 export function callApi(apiId, params) {
   return apiClient.post(`/gateway/apis/${apiId}/call`, params)
+}
+
+export function getApiLogs(apiId, params) {
+  return apiClient.get(`/gateway/apis/${apiId}/logs`, { params })
+}
+
+export function getApiStats(apiId) {
+  return apiClient.get(`/gateway/apis/${apiId}/stats`)
+}
+
+export function regenerateToken(apiId) {
+  return apiClient.post(`/gateway/apis/${apiId}/regenerate-token`)
 }
 
 export default apiClient

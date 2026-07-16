@@ -1,0 +1,10 @@
+from django.db import models
+
+
+class {{ class_name }}(models.Model):
+{% for col in columns %}
+    {{ col.name }} = {{ col.dj_field }}({{ col.dj_kwargs }})
+{% endfor %}
+
+    class Meta:
+        db_table = "{{ table_name }}"

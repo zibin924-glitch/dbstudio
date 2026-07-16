@@ -1,0 +1,8 @@
+export interface {{ class_name }} {
+{% for col in columns %}
+{% if include_comments and col.comment %}
+  /** {{ col.comment }} */
+{% endif %}
+  {{ col.converted_name }}{% if col.nullable %}?{% endif %}: {{ col.ts_type }};
+{% endfor %}
+}

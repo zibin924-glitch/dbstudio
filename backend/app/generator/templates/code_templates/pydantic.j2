@@ -1,0 +1,13 @@
+from datetime import date, datetime, time
+from decimal import Decimal
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class {{ class_name }}(BaseModel):
+{% for col in columns %}
+    {{ col.name }}: {{ col.py_type }} = Field({{ col.field_args }})
+{% endfor %}
+
+    model_config = {"from_attributes": True}

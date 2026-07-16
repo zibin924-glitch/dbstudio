@@ -73,6 +73,18 @@
         </el-select>
       </el-form-item>
 
+      <el-divider content-position="left">Advanced Settings</el-divider>
+
+      <el-form-item label="连接池大小">
+        <el-input-number
+          v-model="formData.pool_size"
+          :min="1"
+          :max="50"
+          controls-position="right"
+          style="width: 200px;"
+        />
+      </el-form-item>
+
       <el-form-item label="Extra Params">
         <el-input
           v-model="formData.extra_params"
@@ -133,6 +145,7 @@ const getDefaultForm = () => ({
   database_name: '',
   group_name: '',
   tags: [],
+  pool_size: 5,
   extra_params: ''
 })
 

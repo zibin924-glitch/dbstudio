@@ -1,6 +1,6 @@
 <template>
   <div class="explorer-page">
-    <!-- Left Panel: Connection Selector + Tree -->
+    <!-- 左侧面板: 连接选择 + 树 -->
     <div class="explorer-left">
       <div class="panel-header">
         <h3 class="panel-title">Structure Browser</h3>
@@ -30,12 +30,31 @@
       </div>
     </div>
 
-    <!-- Resize Handle -->
+    <!-- 拖拽分隔条 -->
     <div class="resize-handle" @mousedown="startResize"></div>
 
-    <!-- Right Panel: Table Detail / Stats -->
+    <!-- 右侧面板: 表详情 / 统计 / ER 图 -->
     <div class="explorer-right" :style="{ width: rightPanelWidth + 'px' }">
-      <template v-if="selectedNode && (selectedNode.type === 'table' || selectedNode.type === 'view')">
+      <!-- ER 图全屏覆盖 -->
+      <template v-if="showErDiagram">
+        <div class="er-overlay">
+          <div class="er-overlay-header">
+            <span class="er-overlay-title">
+              <el-icon><Share /></el-icon>
+              ER 关系图 — {{ currentConnectionName }}
+            </span>
+            <el-button size="small" @click="showErDiagram = false">
+              <el-icon><Close /></el-icon>
+              关闭
+            </el-button>
+          </div>
+          <div class="er-overlay-body">
+            <ErDiagram :connection-id="selectedConnectionId" />
+          </div>
+        </div>
+      </template>
+
+      <template v-else-if="selectedNode && (selectedNode.type === 'table' || selectedNode.type === 'view')">
         <TableDetail
           :key="`${selectedConnectionId}-${selectedNode.schema}-${selectedNode.tableName}`"
           :connection-id="selectedConnectionId"
@@ -70,6 +89,15 @@
               {{ formatBytes(stats.total_size || stats.database_size) }}
             </el-descriptions-item>
           </el-descriptions>
+
+          <!-- ER 图入口按钮 -->
+          <div class="er-entry">
+            <el-button type="primary" plain @click="showErDiagram = true">
+              <el-icon><Share /></el-icon>
+              查看 ER 关系图
+            </el-button>
+            <span class="er-entry-hint">可视化展示所有表和外键关系</span>
+          </div>
 
           <div class="stats-tables-section" v-if="stats.tables && stats.tables.length > 0">
             <h4 class="stats-subtitle">Tables</h4>
@@ -118,6 +146,7 @@ import { useConnectionStore } from '@/stores/connection.js'
 import { getStats } from '@/api/index.js'
 import DbTree from '@/components/DbTree.vue'
 import TableDetail from '@/components/TableDetail.vue'
+import ErDiagram from '@/components/ErDiagram.vue'
 
 const connectionStore = useConnectionStore()
 
@@ -126,6 +155,7 @@ const selectedNode = ref(null)
 const dbTreeRef = ref(null)
 const stats = ref(null)
 const rightPanelWidth = ref(600)
+const showErDiagram = ref(false)
 
 const currentConnectionName = computed(() => {
   const conn = connectionStore.connections.find(c => c.id === selectedConnectionId.value)
@@ -149,6 +179,7 @@ onMounted(() => {
 async function onConnectionChange(connId) {
   selectedNode.value = null
   stats.value = null
+  showErDiagram.value = false
   if (connId) {
     try {
       const response = await getStats(connId)
@@ -161,6 +192,10 @@ async function onConnectionChange(connId) {
 
 function onNodeSelect(node) {
   selectedNode.value = node
+  // 选择表时自动关闭 ER 图，显示表详情
+  if (node.type === 'table' || node.type === 'view') {
+    showErDiagram.value = false
+  }
 }
 
 function formatBytes(bytes) {
@@ -175,7 +210,7 @@ function formatBytes(bytes) {
   return `${size.toFixed(1)} ${units[i]}`
 }
 
-// Resize logic
+// 面板宽度拖拽调整
 let isResizing = false
 let startX = 0
 let startWidth = 0
@@ -206,94 +241,84 @@ function startResize(e) {
 .explorer-page {
   display: flex;
   height: calc(100vh - 98px);
-  background: #fff;
+  background: var(--explorer-bg, #fff);
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
 }
-
 .explorer-left {
-  width: 300px;
-  min-width: 240px;
-  display: flex;
-  flex-direction: column;
-  border-right: 1px solid #e4e7ed;
+  width: 300px; min-width: 240px;
+  display: flex; flex-direction: column;
+  border-right: 1px solid var(--explorer-border, #e4e7ed);
 }
-
 .panel-header {
   padding: 12px 16px;
-  border-bottom: 1px solid #e4e7ed;
+  border-bottom: 1px solid var(--explorer-border, #e4e7ed);
 }
-
 .panel-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #303133;
-  margin: 0;
+  font-size: 15px; font-weight: 600;
+  color: var(--explorer-text, #303133); margin: 0;
 }
-
 .connection-selector {
   padding: 10px 12px;
-  border-bottom: 1px solid #ebeef5;
+  border-bottom: 1px solid var(--explorer-border-light, #ebeef5);
 }
-
-.tree-panel {
-  flex: 1;
-  overflow: auto;
-}
-
+.tree-panel { flex: 1; overflow: auto; }
 .resize-handle {
-  width: 4px;
-  background: #e4e7ed;
-  cursor: col-resize;
-  transition: background 0.2s;
+  width: 4px; background: var(--explorer-border, #e4e7ed);
+  cursor: col-resize; transition: background 0.2s; flex-shrink: 0;
+}
+.resize-handle:hover { background: #409eff; }
+.explorer-right { flex: 1; overflow: auto; min-width: 300px; position: relative; }
+
+/* ER 图覆盖层 */
+.er-overlay {
+  display: flex; flex-direction: column; height: 100%;
+}
+.er-overlay-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--explorer-border, #e4e7ed);
+  background: var(--explorer-bg, #fff);
   flex-shrink: 0;
 }
+.er-overlay-title {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 15px; font-weight: 600;
+  color: var(--explorer-text, #303133);
+}
+.er-overlay-body { flex: 1; overflow: hidden; }
 
-.resize-handle:hover {
-  background: #409eff;
+/* ER 图入口 */
+.er-entry {
+  display: flex; align-items: center; gap: 12px;
+  margin: 16px 0;
+}
+.er-entry-hint {
+  font-size: 12px; color: var(--explorer-muted, #909399);
 }
 
-.explorer-right {
-  flex: 1;
-  overflow: auto;
-  min-width: 300px;
-}
-
-.stats-panel {
-  padding: 20px;
-}
-
+.stats-panel { padding: 20px; }
 .stats-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-  margin: 0 0 16px;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 16px; font-weight: 600;
+  color: var(--explorer-text, #303133); margin: 0 0 16px;
 }
-
-.stats-desc {
-  margin-bottom: 24px;
-  max-width: 700px;
-}
-
+.stats-desc { margin-bottom: 24px; max-width: 700px; }
 .stats-subtitle {
-  font-size: 14px;
-  font-weight: 600;
-  color: #606266;
-  margin: 0 0 10px;
+  font-size: 14px; font-weight: 600;
+  color: var(--explorer-text-secondary, #606266); margin: 0 0 10px;
 }
-
-.stats-tables-section {
-  margin-top: 8px;
-}
-
+.stats-tables-section { margin-top: 8px; }
 .empty-panel {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
+  display: flex; align-items: center; justify-content: center; height: 100%;
+}
+
+/* 暗色模式 */
+:global(html.dark) .explorer-page {
+  --explorer-bg: #141414; --explorer-border: #363636;
+  --explorer-border-light: #414243;
+  --explorer-text: #e5eaf3; --explorer-text-secondary: #cfd3dc;
+  --explorer-muted: #8b8b8b;
 }
 </style>

@@ -1,0 +1,8 @@
+[run]
+source = app
+omit =
+    app/generator/templates/code_templates/*.j2
+
+[report]
+omit =
+    app/generator/templates/code_templates/*.j2

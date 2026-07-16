@@ -24,6 +24,7 @@ from sqlalchemy.orm import (
     mapped_column,
     relationship,
 )
+from sqlalchemy.types import JSON
 
 
 class Base(DeclarativeBase):
@@ -281,4 +282,61 @@ class ApiCallLog(Base):
         return (
             f"<ApiCallLog id={self.id} api_id={self.api_id} "
             f"status={self.response_status}>"
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# AuditLog
+# ──────────────────────────────────────────────────────────────────────────────
+
+class AuditLog(Base):
+    """
+    General-purpose audit log for tracking create/update/delete actions
+    across application resources (connections, API definitions, DDL exports, etc.).
+
+    Each entry records the action type, the affected resource, optional user
+    information, a timestamp, and arbitrary JSON details for context.
+    """
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    action: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        comment="Action type: create, update, delete",
+        index=True,
+    )
+    resource_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        comment="Resource type: connection, api, query, ddl_export",
+        index=True,
+    )
+    resource_id: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="Primary key or identifier of the affected resource",
+    )
+    user_info: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        comment="User identifier or system label (e.g. 'system', IP address)",
+    )
+    details: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="Arbitrary JSON details about the action",
+    )
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<AuditLog id={self.id} action={self.action!r} "
+            f"resource_type={self.resource_type!r} resource_id={self.resource_id!r}>"
         )

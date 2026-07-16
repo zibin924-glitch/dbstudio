@@ -26,6 +26,7 @@ from app.connections.pool import pool_manager
 from app.connections.service import ConnectionService
 from app.database.models import ApiCallLog, ApiDefinition
 from app.database.session import get_db
+from app.utils.audit import log_audit
 from app.utils.responses import ErrorResponse, SuccessResponse
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,156 @@ def _set_cache(key: str, data: dict) -> None:
 # --- Helpers ---
 
 
+def _build_openapi_spec(api: ApiDefinition, base_url: str = "/api") -> dict:
+    """Build an OpenAPI 3.0 spec dict for a single API definition.
+
+    Extracts parameters from the SQL template and params_definition,
+    builds path items with appropriate HTTP methods, and includes
+    authentication schemes.
+
+    Args:
+        api: The ApiDefinition ORM model.
+        base_url: The base URL prefix for gateway paths.
+
+    Returns:
+        A dictionary conforming to the OpenAPI 3.0 specification.
+    """
+    # Parse params definition
+    params_def = []
+    if api.params_definition:
+        try:
+            params_def = json.loads(api.params_definition)
+        except (json.JSONDecodeError, TypeError):
+            params_def = []
+
+    # Also extract params from SQL template for documentation
+    sql_params = gateway.extract_params(api.sql_template)
+
+    # Build parameter objects
+    parameters = []
+    seen_params = set()
+    for pdef in params_def:
+        pname = pdef.get("name", "")
+        seen_params.add(pname)
+        param_obj = {
+            "name": pname,
+            "in": "query",
+            "required": pdef.get("required", False),
+            "schema": {
+                "type": _map_param_type_to_openapi(pdef.get("type", "string")),
+            },
+        }
+        if pdef.get("description"):
+            param_obj["description"] = pdef["description"]
+        if pdef.get("default") is not None:
+            param_obj["schema"]["default"] = pdef["default"]
+        parameters.append(param_obj)
+
+    # Add any SQL-extracted params not already in params_definition
+    for sp in sql_params:
+        if sp not in seen_params:
+            parameters.append({
+                "name": sp,
+                "in": "query",
+                "required": False,
+                "schema": {"type": "string"},
+            })
+
+    # Build security scheme
+    security = []
+    security_schemes = {}
+    if api.auth_type == "token":
+        security_schemes["bearerAuth"] = {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "Token",
+        }
+        security = [{"bearerAuth": []}]
+
+    # Determine the HTTP method
+    method = api.method.lower() if api.method else "get"
+
+    # Build the path item
+    operation = {
+        "summary": api.name,
+        "operationId": f"api_{api.id}_{api.name.lower().replace(' ', '_')}",
+        "parameters": parameters,
+        "responses": {
+            "200": {
+                "description": "Successful response",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {"type": "integer", "example": 0},
+                                "message": {"type": "string", "example": "success"},
+                                "data": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {"type": "object"},
+                                        },
+                                        "total": {"type": "integer"},
+                                        "duration_ms": {"type": "integer"},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+            "400": {"description": "Bad request - parameter validation failed"},
+            "401": {"description": "Authentication failed"},
+            "404": {"description": "API not found"},
+            "429": {"description": "Rate limit exceeded"},
+        },
+    }
+
+    if security:
+        operation["security"] = security
+
+    # Build the full gateway path
+    url_path = api.url_path
+    if not url_path.startswith("/"):
+        url_path = f"/{url_path}"
+    full_path = f"{base_url}/gateway{url_path}"
+
+    path_item = {method: operation}
+
+    spec = {
+        "openapi": "3.0.3",
+        "info": {
+            "title": f"DBStudio API - {api.name}",
+            "description": f"Auto-generated OpenAPI spec for API: {api.name}. SQL template: `{api.sql_template}`",
+            "version": api.version if hasattr(api, "version") and api.version else "1.0.0",
+        },
+        "paths": {
+            full_path: path_item,
+        },
+        "components": {
+            "securitySchemes": security_schemes,
+        },
+    }
+
+    return spec
+
+
+def _map_param_type_to_openapi(param_type: str) -> str:
+    """Map API parameter type string to OpenAPI schema type."""
+    type_map = {
+        "string": "string",
+        "int": "integer",
+        "integer": "integer",
+        "float": "number",
+        "number": "number",
+        "bool": "boolean",
+        "boolean": "boolean",
+    }
+    return type_map.get(param_type.lower(), "string")
+
+
 def _to_response_dict(api: ApiDefinition) -> dict:
     """Convert ApiDefinition ORM model to response dictionary."""
     params_def = []
@@ -101,6 +252,7 @@ def _to_response_dict(api: ApiDefinition) -> dict:
 @router.post("/", response_model=None)
 async def create_api(
     data: ApiCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new API definition.
@@ -142,6 +294,17 @@ async def create_api(
     if token:
         token_manager.register_token(api.id, token)
 
+    # Audit log
+    await log_audit(
+        db,
+        action="create",
+        resource_type="api",
+        resource_id=api.id,
+        user_info=request.client.host if request.client else None,
+        details={"name": data.name, "url_path": data.url_path, "method": data.method},
+    )
+    await db.commit()
+
     return SuccessResponse(data=_to_response_dict(api), message="API created successfully.", code=201)
 
 
@@ -161,6 +324,63 @@ async def list_apis(db: AsyncSession = Depends(get_db)):
         return ErrorResponse(message="Failed to list APIs.", detail=str(exc))
 
 
+@router.get("/openapi-all", response_model=None)
+async def generate_openapi_all(db: AsyncSession = Depends(get_db)):
+    """Generate a combined OpenAPI 3.0 specification for all enabled API definitions.
+
+    Merges paths from every enabled API into a single OpenAPI document
+    that can be imported into tools like Swagger UI, Postman, or Insomnia.
+    """
+    try:
+        result = await db.execute(
+            select(ApiDefinition)
+            .where(ApiDefinition.is_enabled.is_(True))
+            .order_by(ApiDefinition.id)
+        )
+        apis = result.scalars().all()
+
+        if not apis:
+            return ErrorResponse(
+                message="No enabled API definitions found.",
+                code=404,
+            )
+
+        # Build combined spec
+        combined = {
+            "openapi": "3.0.3",
+            "info": {
+                "title": "DBStudio Gateway APIs",
+                "description": "Auto-generated combined OpenAPI spec for all enabled gateway APIs.",
+                "version": "1.0.0",
+            },
+            "paths": {},
+            "components": {
+                "securitySchemes": {
+                    "bearerAuth": {
+                        "type": "http",
+                        "scheme": "bearer",
+                        "bearerFormat": "Token",
+                    },
+                },
+            },
+        }
+
+        for api in apis:
+            spec = _build_openapi_spec(api)
+            # Merge paths
+            for path, path_item in spec.get("paths", {}).items():
+                if path in combined["paths"]:
+                    combined["paths"][path].update(path_item)
+                else:
+                    combined["paths"][path] = path_item
+
+        return SuccessResponse(data=combined)
+
+    except Exception as exc:
+        logger.error("Failed to generate combined OpenAPI spec: %s", exc)
+        return ErrorResponse(message="Failed to generate OpenAPI spec.", detail=str(exc))
+
+
 @router.get("/{api_id}", response_model=None)
 async def get_api(
     api_id: int,
@@ -178,6 +398,7 @@ async def get_api(
 async def update_api(
     api_id: int,
     data: ApiUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Update an existing API definition."""
@@ -215,6 +436,18 @@ async def update_api(
 
     await db.flush()
     await db.refresh(api)
+
+    # Audit log
+    await log_audit(
+        db,
+        action="update",
+        resource_type="api",
+        resource_id=api_id,
+        user_info=request.client.host if request.client else None,
+        details={"updated_fields": list(update_data.keys())},
+    )
+    await db.commit()
+
     return SuccessResponse(data=_to_response_dict(api), message="API updated successfully.")
 
 
@@ -241,6 +474,7 @@ async def toggle_api(
 @router.delete("/{api_id}", status_code=204)
 async def delete_api(
     api_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Delete an API definition. Returns 204 on success."""
@@ -253,8 +487,21 @@ async def delete_api(
     if api.auth_token:
         token_manager.revoke_all_for_api(api.id)
 
+    api_name = api.name
     await db.delete(api)
     await db.flush()
+
+    # Audit log
+    await log_audit(
+        db,
+        action="delete",
+        resource_type="api",
+        resource_id=api_id,
+        user_info=request.client.host if request.client else None,
+        details={"name": api_name},
+    )
+    await db.commit()
+
     return None
 
 
@@ -341,6 +588,28 @@ async def get_api_stats(api_id: int, db: AsyncSession = Depends(get_db)):
         "error_count": error_count,
         "error_rate": round(error_count / total_calls * 100, 2) if total_calls > 0 else 0,
     })
+
+
+@router.get("/{api_id}/openapi", response_model=None)
+async def generate_openapi(
+    api_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate an OpenAPI 3.0 specification for a single API definition.
+
+    Returns a complete OpenAPI 3.0 JSON document that describes the API
+    endpoint including its path, method, parameters (extracted from the
+    SQL template), authentication scheme, and response schema.
+    """
+    result = await db.execute(
+        select(ApiDefinition).where(ApiDefinition.id == api_id)
+    )
+    api = result.scalar_one_or_none()
+    if api is None:
+        return ErrorResponse(message="API definition not found.", code=404)
+
+    spec = _build_openapi_spec(api)
+    return SuccessResponse(data=spec)
 
 
 @router.post("/{api_id}/regenerate-token", response_model=None)
