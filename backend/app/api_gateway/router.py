@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,6 +67,25 @@ def _set_cache(key: str, data: dict) -> None:
 
 
 # --- Helpers ---
+
+
+def _mask_token(token: str | None) -> str | None:
+    """对认证令牌进行脱敏处理，仅显示最后 4 个字符。
+
+    安全修复：在列表和详情 API 响应中隐藏完整令牌，
+    防止敏感凭据在常规请求中泄露。
+
+    Args:
+        token: 原始认证令牌字符串。
+
+    Returns:
+        脱敏后的令牌（如 ****abcd），或 None。
+    """
+    if not token:
+        return None
+    if len(token) <= 4:
+        return "****"
+    return f"****{token[-4:]}"
 
 
 def _build_openapi_spec(api: ApiDefinition, base_url: str = "/api") -> dict:
@@ -239,7 +258,8 @@ def _to_response_dict(api: ApiDefinition) -> dict:
         "result_limit": api.result_limit,
         "cache_seconds": api.cache_seconds,
         "auth_type": api.auth_type,
-        "token": api.auth_token,
+        # 安全修复：令牌脱敏，仅显示最后 4 位
+        "token": _mask_token(api.auth_token),
         "is_enabled": api.is_enabled,
         "created_at": api.created_at,
         "updated_at": api.updated_at,
@@ -249,7 +269,7 @@ def _to_response_dict(api: ApiDefinition) -> dict:
 # --- Management Endpoints ---
 
 
-@router.post("/", response_model=None)
+@router.post("/", status_code=201, response_model=None)
 async def create_api(
     data: ApiCreate,
     request: Request,
@@ -305,7 +325,12 @@ async def create_api(
     )
     await db.commit()
 
-    return SuccessResponse(data=_to_response_dict(api), message="API created successfully.", code=201)
+    # 创建时返回完整令牌，便于用户保存（后续 GET 请求中令牌会被脱敏）
+    response_data = _to_response_dict(api)
+    if token:
+        response_data["token"] = token  # 覆盖脱敏值，创建时展示完整令牌
+
+    return SuccessResponse(data=response_data, message="API created successfully.", code=201)
 
 
 async def session_flush(db: AsyncSession):
@@ -481,7 +506,7 @@ async def delete_api(
     result = await db.execute(select(ApiDefinition).where(ApiDefinition.id == api_id))
     api = result.scalar_one_or_none()
     if api is None:
-        return ErrorResponse(message="API definition not found.", code=404)
+        raise HTTPException(status_code=404, detail="API definition not found.")
 
     # Revoke tokens
     if api.auth_token:
@@ -632,6 +657,40 @@ async def regenerate_token(api_id: int, db: AsyncSession = Depends(get_db)):
     await db.refresh(api)
 
     return SuccessResponse(data={"token": new_token}, message="Token regenerated.")
+
+
+@router.get("/{api_id}/token", response_model=None)
+async def get_api_token(
+    api_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+):
+    """获取 API 定义的完整认证令牌（敏感操作）。
+
+    安全修复：此端点返回未经脱敏的完整令牌，仅在明确配置了 API_KEY 时
+    需要 X-API-Key 头认证。未配置 API_KEY 时也可访问（向后兼容）。
+    """
+    from app.config import settings
+
+    # 如果配置了 API_KEY，则校验请求头中的 X-API-Key
+    if settings.API_KEY:
+        if not x_api_key or x_api_key != settings.API_KEY:
+            return ErrorResponse(
+                message="Unauthorized: Valid X-API-Key header is required to view full token.",
+                code=401,
+            )
+
+    result = await db.execute(select(ApiDefinition).where(ApiDefinition.id == api_id))
+    api = result.scalar_one_or_none()
+    if api is None:
+        return ErrorResponse(message="API definition not found.", code=404)
+
+    return SuccessResponse(data={
+        "api_id": api.id,
+        "name": api.name,
+        "auth_type": api.auth_type,
+        "token": api.auth_token,  # 返回完整令牌
+    })
 
 
 async def reload_tokens_from_db(db: AsyncSession) -> None:

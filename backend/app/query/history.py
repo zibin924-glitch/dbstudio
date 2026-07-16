@@ -12,6 +12,25 @@ from app.database.models import QueryHistory
 logger = logging.getLogger(__name__)
 
 
+def escape_like(value: str) -> str:
+    """转义 LIKE 模式中的特殊字符（%、_、\\），防止 LIKE 注入攻击。
+
+    在 SQL LIKE 表达式中，% 和 _ 是通配符，\\ 是转义字符。
+    用户输入的搜索关键字必须先转义这些字符，再拼入 LIKE 模式。
+
+    Args:
+        value: 原始用户输入字符串。
+
+    Returns:
+        转义后的安全字符串。
+    """
+    # 先转义反斜杠，再转义 % 和 _
+    value = value.replace("\\", "\\\\")
+    value = value.replace("%", "\\%")
+    value = value.replace("_", "\\_")
+    return value
+
+
 class QueryHistoryService:
     """Service for managing SQL query execution history records."""
 
@@ -95,9 +114,11 @@ class QueryHistoryService:
         Returns:
             List of matching history entry dictionaries.
         """
+        # 安全修复：转义 LIKE 特殊字符，防止 LIKE 注入攻击
+        safe_keyword = escape_like(keyword)
         stmt = (
             select(QueryHistory)
-            .where(QueryHistory.sql_text.ilike(f"%{keyword}%"))
+            .where(QueryHistory.sql_text.ilike(f"%{safe_keyword}%", escape="\\"))
             .order_by(QueryHistory.created_at.desc())
         )
 

@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 
 const apiClient = axios.create({
@@ -9,6 +10,21 @@ const apiClient = axios.create({
   }
 })
 
+// H-F4: 全局后端可达状态（响应式，供组件使用）
+export const backendStatus = reactive({
+  reachable: true,
+  lastError: null
+})
+
+// H-F4: 错误提示防抖 —— 3 秒内最多弹出一个错误 toast
+let lastErrorToastTime = 0
+function showDebouncedError(message) {
+  const now = Date.now()
+  if (now - lastErrorToastTime < 3000) return
+  lastErrorToastTime = now
+  ElMessage.error(message)
+}
+
 // Request interceptor
 apiClient.interceptors.request.use(
   config => config,
@@ -17,10 +33,26 @@ apiClient.interceptors.request.use(
 
 // Response interceptor
 apiClient.interceptors.response.use(
-  response => response.data,
+  response => {
+    // H-F4: 请求成功，标记后端可达
+    backendStatus.reachable = true
+    backendStatus.lastError = null
+    return response.data
+  },
   error => {
-    const message = error.response?.data?.detail || error.message || 'Request failed'
-    ElMessage.error(message)
+    // H-F4: 区分网络不可达和服务器错误
+    if (!error.response) {
+      // 没有响应 —— 网络错误或后端不可达
+      backendStatus.reachable = false
+      backendStatus.lastError = error.message || '网络连接失败'
+      showDebouncedError('后端服务不可达，请检查服务是否正常运行')
+    } else {
+      // 有响应但是错误状态码 —— 后端可达但返回了错误
+      backendStatus.reachable = true
+      backendStatus.lastError = null
+      const message = error.response?.data?.detail || error.message || 'Request failed'
+      showDebouncedError(message)
+    }
     return Promise.reject(error)
   }
 )

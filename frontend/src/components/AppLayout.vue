@@ -39,6 +39,15 @@
       </div>
     </el-aside>
     <el-container class="main-container">
+      <!-- H-F4: 后端不可达全局提示横幅 -->
+      <el-alert
+        v-if="!backendStatus.reachable"
+        title="后端服务不可达，请检查服务是否正常运行"
+        type="error"
+        :closable="false"
+        show-icon
+        class="backend-unreachable-banner"
+      />
       <el-header class="app-header" height="50px">
         <div class="header-left">
           <el-breadcrumb separator="/">
@@ -77,6 +86,7 @@
 import { ref, computed, h, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useConnectionStore } from '@/stores/connection.js'
+import { backendStatus } from '@/api/index.js'
 import { Sunny, Moon } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -233,5 +243,17 @@ onMounted(() => {
 :global(html.dark) .app-main :deep(.el-card) {
   --el-card-bg-color: #1d1e1f;
   --el-card-border-color: #363636;
+}
+
+/* H-F4: 后端不可达横幅样式 */
+.backend-unreachable-banner {
+  flex-shrink: 0;
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+}
+.backend-unreachable-banner :deep(.el-alert__title) {
+  font-size: 13px;
+  font-weight: 500;
 }
 </style>

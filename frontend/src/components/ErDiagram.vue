@@ -1,5 +1,5 @@
 <template>
-  <div class="er-diagram-wrapper" v-loading="loading" element-loading-text="正在加载 ER 图数据...">
+  <div class="er-diagram-wrapper" v-loading="loading" :element-loading-text="loadingText">
     <!-- 工具栏 -->
     <div class="er-toolbar">
       <div class="er-toolbar-left">
@@ -163,6 +163,8 @@ const props = defineProps({
 
 // ======== 响应式状态 ========
 const loading = ref(false)
+// 加载进度提示文本
+const loadingText = ref('正在加载 ER 图数据...')
 const tables = ref([])
 const relationships = ref([])
 const selectedTable = ref(null)
@@ -234,20 +236,49 @@ function getLineEndMarker(rel) {
   return hl ? 'url(#er-many-hl)' : 'url(#er-many)'
 }
 
-// ======== 数据加载 ========
+// ======== 数据加载（批量并行优化，解决 N+1 查询问题） ========
+const BATCH_SIZE = 10
+
+/** 批量获取单表的列信息 */
+async function fetchTableColumns(connId, schema, tableName) {
+  try {
+    const cResp = await getColumns(connId, schema, tableName)
+    return (cResp.data || cResp || []).map(c => ({
+      name: c.name || c.column_name,
+      type: c.data_type || c.type || 'unknown',
+      is_pk: !!(c.is_primary_key || c.is_pk || c.column_key === 'PRI')
+    }))
+  } catch {
+    return []
+  }
+}
+
+/** 批量获取单表的外键信息 */
+async function fetchTableForeignKeys(connId, schema, tableName) {
+  try {
+    const fkResp = await getForeignKeys(connId, schema, tableName)
+    return fkResp.data || fkResp || []
+  } catch {
+    return []
+  }
+}
+
 async function fetchDiagramData() {
   if (!props.connectionId) return
   loading.value = true
+  loadingText.value = '正在加载 ER 图数据...'
   tables.value = []
   relationships.value = []
   selectedTable.value = null
 
   try {
     // 1) 获取所有 schema
+    loadingText.value = '正在获取 Schema 列表...'
     const schemaResp = await getSchemas(props.connectionId)
     const schemas = (schemaResp.data || schemaResp || []).map(s => s.name || s)
 
-    // 2) 遍历 schema 获取表和列信息
+    // 2) 遍历 schema 获取所有表（表列表仍按 schema 顺序串行获取）
+    loadingText.value = '正在获取表列表...'
     const allTables = []
     for (const schema of schemas) {
       try {
@@ -256,31 +287,47 @@ async function fetchDiagramData() {
         for (const t of rawTables) {
           const tName = t.name || t.table_name || t
           if (String(t.type || 'table').toUpperCase() === 'VIEW') continue
-
-          let cols = []
-          try {
-            const cResp = await getColumns(props.connectionId, schema, tName)
-            cols = (cResp.data || cResp || []).map(c => ({
-              name: c.name || c.column_name,
-              type: c.data_type || c.type || 'unknown',
-              is_pk: !!(c.is_primary_key || c.is_pk || c.column_key === 'PRI')
-            }))
-          } catch {}
-          allTables.push({ name: tName, schema, columns: cols, x: 0, y: 0 })
+          allTables.push({ name: tName, schema, columns: [], x: 0, y: 0 })
         }
       } catch {}
+    }
+
+    // 3) 分批并行获取所有表的列信息（解决 N+1 问题）
+    const totalTables = allTables.length
+    for (let i = 0; i < totalTables; i += BATCH_SIZE) {
+      const batch = allTables.slice(i, i + BATCH_SIZE)
+      const batchEnd = Math.min(i + BATCH_SIZE, totalTables)
+      loadingText.value = `正在加载表元数据 (${batchEnd}/${totalTables})...`
+
+      await Promise.allSettled(
+        batch.map(async (table) => {
+          table.columns = await fetchTableColumns(props.connectionId, table.schema, table.name)
+        })
+      )
     }
 
     tables.value = allTables
     buildSchemaColors(allTables)
     doAutoLayout()
 
-    // 3) 获取所有外键关系
+    // 4) 分批并行获取所有外键关系
     const allRels = []
-    for (const table of allTables) {
-      try {
-        const fkResp = await getForeignKeys(props.connectionId, table.schema, table.name)
-        const fks = fkResp.data || fkResp || []
+    for (let i = 0; i < totalTables; i += BATCH_SIZE) {
+      const batch = allTables.slice(i, i + BATCH_SIZE)
+      const batchEnd = Math.min(i + BATCH_SIZE, totalTables)
+      loadingText.value = `正在加载外键关系 (${batchEnd}/${totalTables})...`
+
+      const results = await Promise.allSettled(
+        batch.map(table =>
+          fetchTableForeignKeys(props.connectionId, table.schema, table.name)
+        )
+      )
+
+      // 处理每批结果，构建关系连线
+      results.forEach((result, idx) => {
+        if (result.status !== 'fulfilled') return
+        const fks = result.value
+        const table = batch[idx]
         for (const fk of fks) {
           const refT = fk.referred_table || fk.referenced_table_name || fk.referenced_table
           if (!refT) continue
@@ -293,7 +340,7 @@ async function fetchDiagramData() {
             highlighted: false, x1: 0, y1: 0, x2: 0, y2: 0
           })
         }
-      } catch {}
+      })
     }
 
     relationships.value = allRels

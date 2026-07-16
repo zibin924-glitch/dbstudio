@@ -8,6 +8,7 @@ Remote database credentials are never stored in plain text; the
 """
 
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import (
     Boolean,
@@ -72,6 +73,11 @@ class Connection(Base):
     pool_size: Mapped[int] = mapped_column(
         Integer, nullable=False, default=5, server_default="5"
     )
+    # 安全修复：服务端只读模式标志。设为 True 时，无论请求参数如何，该连接上的查询都强制只读
+    read_only: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0",
+        comment="Server-side read-only mode: enforces SELECT-only queries regardless of request parameter"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -81,10 +87,12 @@ class Connection(Base):
 
     # ── Relationships ──────────────────────────────────────────────────────
     query_histories: Mapped[list["QueryHistory"]] = relationship(
-        "QueryHistory", back_populates="connection", cascade="all, delete-orphan"
+        "QueryHistory", back_populates="connection", cascade="all, delete",
+        passive_deletes=True,
     )
     api_definitions: Mapped[list["ApiDefinition"]] = relationship(
-        "ApiDefinition", back_populates="connection", cascade="all, delete-orphan"
+        "ApiDefinition", back_populates="connection", cascade="all, delete",
+        passive_deletes=True,
     )
 
     def get_extra_params(self) -> dict:
@@ -128,10 +136,10 @@ class QueryHistory(Base):
     __tablename__ = "query_histories"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    connection_id: Mapped[int] = mapped_column(
+    connection_id: Mapped[int | None] = mapped_column(
         Integer,
-        ForeignKey("connections.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("connections.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     sql_text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -150,7 +158,7 @@ class QueryHistory(Base):
     )
 
     # ── Relationships ──────────────────────────────────────────────────────
-    connection: Mapped["Connection"] = relationship(
+    connection: Mapped[Optional["Connection"]] = relationship(
         "Connection", back_populates="query_histories"
     )
 
@@ -189,10 +197,10 @@ class ApiDefinition(Base):
     params_definition: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="JSON schema describing accepted parameters"
     )
-    connection_id: Mapped[int] = mapped_column(
+    connection_id: Mapped[int | None] = mapped_column(
         Integer,
-        ForeignKey("connections.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("connections.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     result_limit: Mapped[int] = mapped_column(
@@ -229,7 +237,7 @@ class ApiDefinition(Base):
     )
 
     # ── Relationships ──────────────────────────────────────────────────────
-    connection: Mapped["Connection"] = relationship(
+    connection: Mapped[Optional["Connection"]] = relationship(
         "Connection", back_populates="api_definitions"
     )
     call_logs: Mapped[list["ApiCallLog"]] = relationship(

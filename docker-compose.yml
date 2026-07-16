@@ -5,8 +5,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DBSTUDIO_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-      - DBSTUDIO_DEBUG=true
+      # 安全修复：不再硬编码加密密钥，通过 .env 文件提供
+      # 生成方式: python -c "import secrets; print(secrets.token_hex(32))"
+      - DBSTUDIO_ENCRYPTION_KEY=${DBSTUDIO_ENCRYPTION_KEY}
+      - DBSTUDIO_DEBUG=${DBSTUDIO_DEBUG:-false}
+      - DBSTUDIO_API_KEY=${DBSTUDIO_API_KEY:-}
+    env_file:
+      - .env
     volumes:
       - db-data:/app/data
     healthcheck:

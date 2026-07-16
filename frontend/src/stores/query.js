@@ -8,6 +8,10 @@ import {
 
 let tabIdCounter = 1
 
+// sessionStorage 键名常量
+const TABS_STORAGE_KEY = 'dbstudio_queryTabs'
+const ACTIVE_TAB_KEY = 'dbstudio_activeTabId'
+
 function createNewTab(name) {
   const id = tabIdCounter++
   return {
@@ -46,6 +50,8 @@ export const useQueryStore = defineStore('query', {
       const tab = createNewTab(name)
       this.tabs.push(tab)
       this.activeTabId = tab.id
+      // 持久化标签页状态
+      this._persistTabs()
       return tab
     },
 
@@ -61,6 +67,8 @@ export const useQueryStore = defineStore('query', {
         this.tabs[0].total = 0
         this.tabs[0].durationMs = null
         this.tabs[0].error = null
+        // 持久化标签页状态
+        this._persistTabs()
         return
       }
       this.tabs.splice(index, 1)
@@ -68,10 +76,14 @@ export const useQueryStore = defineStore('query', {
         const newIndex = Math.min(index, this.tabs.length - 1)
         this.activeTabId = this.tabs[newIndex].id
       }
+      // 持久化标签页状态
+      this._persistTabs()
     },
 
     setActiveTab(tabId) {
       this.activeTabId = tabId
+      // 持久化标签页状态
+      this._persistTabs()
     },
 
     async executeQuery(connectionId, sql, page = 1, pageSize = 50) {
@@ -95,6 +107,8 @@ export const useQueryStore = defineStore('query', {
         tab.page = page
         tab.pageSize = pageSize
         tab.results = data
+        // 执行查询后持久化标签页中的 SQL 文本
+        this._persistTabs()
         return data
       } catch (error) {
         const message = error.response?.data?.detail || error.message || 'Query execution failed'
@@ -150,6 +164,67 @@ export const useQueryStore = defineStore('query', {
       } catch (error) {
         console.error('Failed to toggle favorite:', error)
         throw error
+      }
+    },
+
+    // 持久化标签页到 sessionStorage（只保存轻量数据，不保存查询结果）
+    _persistTabs() {
+      try {
+        const tabsData = this.tabs.map(t => ({
+          id: t.id,
+          name: t.name,
+          sql: t.sql
+        }))
+        sessionStorage.setItem(TABS_STORAGE_KEY, JSON.stringify(tabsData))
+        sessionStorage.setItem(ACTIVE_TAB_KEY, JSON.stringify(this.activeTabId))
+        // 同步更新 tabIdCounter，避免恢复后 ID 冲突
+        const maxId = Math.max(...this.tabs.map(t => t.id), 0)
+        if (tabIdCounter <= maxId) {
+          tabIdCounter = maxId + 1
+        }
+      } catch (e) {
+        console.warn('Failed to persist query tabs:', e)
+      }
+    },
+
+    // 从 sessionStorage 恢复标签页状态
+    restoreTabs() {
+      try {
+        const savedTabs = sessionStorage.getItem(TABS_STORAGE_KEY)
+        const savedActiveId = sessionStorage.getItem(ACTIVE_TAB_KEY)
+        if (savedTabs) {
+          const parsedTabs = JSON.parse(savedTabs)
+          if (Array.isArray(parsedTabs) && parsedTabs.length > 0) {
+            // 恢复标签页（只恢复 id, name, sql，其余字段使用默认值）
+            this.tabs = parsedTabs.map(t => ({
+              id: t.id,
+              name: t.name || `Query ${t.id}`,
+              sql: t.sql || '',
+              results: null,
+              columns: [],
+              rows: [],
+              total: 0,
+              page: 1,
+              pageSize: 50,
+              durationMs: null,
+              loading: false,
+              error: null
+            }))
+            // 更新 tabIdCounter 以避免新标签 ID 冲突
+            const maxId = Math.max(...this.tabs.map(t => t.id), 0)
+            tabIdCounter = maxId + 1
+
+            // 恢复激活的标签页
+            if (savedActiveId) {
+              const activeId = JSON.parse(savedActiveId)
+              if (this.tabs.some(t => t.id === activeId)) {
+                this.activeTabId = activeId
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to restore query tabs:', e)
       }
     }
   }

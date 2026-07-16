@@ -44,7 +44,7 @@ class ApiUpdate(BaseModel):
 
 
 class ApiResponse(BaseModel):
-    """Full API definition response."""
+    """Full API definition response (token is masked for security)."""
 
     id: int
     name: str
@@ -56,12 +56,22 @@ class ApiResponse(BaseModel):
     result_limit: int
     cache_seconds: int
     auth_type: str
-    token: Optional[str]
+    # 安全修复：令牌字段已脱敏，仅显示最后 4 位（如 ****abcd）
+    token: Optional[str] = Field(default=None, description="Masked token (last 4 chars only)")
     is_enabled: bool
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ApiTokenResponse(BaseModel):
+    """API token reveal response - full token returned for authorized requests only."""
+
+    api_id: int
+    name: str
+    auth_type: str
+    token: Optional[str] = Field(default=None, description="Full authentication token")
 
 
 class ApiCallRequest(BaseModel):

@@ -20,6 +20,8 @@ class ConnectionCreate(BaseModel):
     group_name: str = Field(default="default", description="Connection group name")
     tags: list[str] = Field(default_factory=list, description="Tags for organizing connections")
     pool_size: int = Field(default=5, ge=1, le=50, description="Connection pool size")
+    # 安全修复：服务端只读模式，启用后该连接强制只允许 SELECT 查询
+    read_only: bool = Field(default=False, description="Server-side read-only mode for this connection")
 
 
 class ConnectionUpdate(BaseModel):
@@ -36,6 +38,8 @@ class ConnectionUpdate(BaseModel):
     group_name: Optional[str] = Field(default=None)
     tags: Optional[list[str]] = Field(default=None)
     pool_size: Optional[int] = Field(default=None, ge=1, le=50)
+    # 安全修复：服务端只读模式
+    read_only: Optional[bool] = Field(default=None, description="Server-side read-only mode")
 
 
 class ConnectionResponse(BaseModel):
@@ -51,6 +55,8 @@ class ConnectionResponse(BaseModel):
     group_name: str
     tags: list[str]
     pool_size: int
+    # 安全修复：返回只读模式状态
+    read_only: bool
     created_at: datetime
     updated_at: datetime
 

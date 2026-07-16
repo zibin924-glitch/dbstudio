@@ -89,7 +89,8 @@ export const useConnectionStore = defineStore('connection', {
         const response = await apiDeleteConnection(id)
         await this.fetchConnections()
         if (this.currentConnection && this.currentConnection.id === id) {
-          this.currentConnection = null
+          // 删除的是当前连接，通过 setCurrentConnection 清除并更新 sessionStorage
+          this.setCurrentConnection(null)
         }
         return response
       } catch (error) {
@@ -112,6 +113,37 @@ export const useConnectionStore = defineStore('connection', {
 
     setCurrentConnection(connection) {
       this.currentConnection = connection
+      // 持久化当前连接 ID 到 sessionStorage
+      try {
+        if (connection && connection.id) {
+          sessionStorage.setItem('dbstudio_currentConnectionId', JSON.stringify(connection.id))
+        } else {
+          sessionStorage.removeItem('dbstudio_currentConnectionId')
+        }
+      } catch (e) {
+        // sessionStorage 不可用时忽略
+        console.warn('Failed to persist connection state:', e)
+      }
+    },
+
+    // 从 sessionStorage 恢复当前连接状态
+    restoreState() {
+      try {
+        const savedId = sessionStorage.getItem('dbstudio_currentConnectionId')
+        if (savedId) {
+          const id = JSON.parse(savedId)
+          // 在已加载的连接列表中查找匹配的连接
+          const conn = this.connections.find(c => c.id === id)
+          if (conn) {
+            this.currentConnection = conn
+          } else {
+            // 连接已不存在，清除 sessionStorage
+            sessionStorage.removeItem('dbstudio_currentConnectionId')
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to restore connection state:', e)
+      }
     }
   }
 })

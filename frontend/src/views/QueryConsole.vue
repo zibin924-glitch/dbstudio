@@ -24,6 +24,23 @@
           size="small"
           style="margin-left: 12px;"
         />
+        <!-- H-F2: Schema 选择器，用于自动补全的 schema 上下文 -->
+        <el-select
+          v-if="schemas.length > 0"
+          v-model="currentSchema"
+          placeholder="Schema"
+          filterable
+          clearable
+          size="default"
+          style="width: 160px; margin-left: 12px;"
+        >
+          <el-option
+            v-for="sc in schemas"
+            :key="sc"
+            :label="sc"
+            :value="sc"
+          />
+        </el-select>
       </div>
       <div class="toolbar-right">
         <el-button
@@ -68,6 +85,8 @@
           <SqlEditor
             v-model="currentSql"
             :read-only="readOnlyMode"
+            :connection-id="selectedConnectionId"
+            :schema="currentSchema"
             @execute="handleExecute"
           />
           <!-- EXPLAIN 按钮组（放在编辑器底部） -->
@@ -139,10 +158,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useConnectionStore } from '@/stores/connection.js'
 import { useQueryStore } from '@/stores/query.js'
+import { getSchemas } from '@/api/index.js'
 import SqlEditor from '@/components/SqlEditor.vue'
 import QueryResult from '@/components/QueryResult.vue'
 import QueryHistory from '@/components/QueryHistory.vue'
@@ -154,6 +174,25 @@ const queryStore = useQueryStore()
 const selectedConnectionId = ref(null)
 const readOnlyMode = ref(false)
 const showHistory = ref(false)
+
+// H-F2: Schema 跟踪，支持多 schema 数据库的自动补全
+const currentSchema = ref(null)
+const schemas = ref([])
+
+// 连接变化时获取 schema 列表
+watch(selectedConnectionId, async (connId) => {
+  currentSchema.value = null
+  schemas.value = []
+  if (!connId) return
+  try {
+    const resp = await getSchemas(connId)
+    const list = (resp.data || resp || []).map(s => s.name || s)
+    schemas.value = list
+    if (list.length > 0) currentSchema.value = list[0]
+  } catch {
+    schemas.value = []
+  }
+})
 
 // EXPLAIN 相关状态
 const showExplainPlan = ref(false)
@@ -184,12 +223,39 @@ const currentDbType = computed(() => {
 
 onMounted(() => {
   connectionStore.fetchConnections().then(() => {
+    // 从 sessionStorage 恢复连接和标签页状态
+    connectionStore.restoreState()
+    queryStore.restoreTabs()
     if (connectionStore.currentConnection) {
       selectedConnectionId.value = connectionStore.currentConnection.id
     } else if (connectionStore.connections.length > 0) {
       selectedConnectionId.value = connectionStore.connections[0].id
     }
   })
+})
+
+// 监听当前连接变化，当连接被删除时重置查询控制台状态
+watch(() => connectionStore.currentConnection, (newConn) => {
+  if (!newConn) {
+    // 当前连接被删除，重置连接选择
+    selectedConnectionId.value = null
+  } else if (selectedConnectionId.value && !connectionStore.connections.find(c => c.id === selectedConnectionId.value)) {
+    // 当前选中的连接已不在列表中
+    selectedConnectionId.value = null
+  }
+})
+
+// 页面刷新/关闭前保存当前标签页状态（确保未执行的 SQL 也被保存）
+function handleBeforeUnload() {
+  queryStore._persistTabs()
+}
+
+onMounted(() => {
+  window.addEventListener('beforeunload', handleBeforeUnload)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('beforeunload', handleBeforeUnload)
 })
 
 function handleAddTab() {
@@ -251,31 +317,89 @@ async function handlePageChange(page) {
   }
 }
 
+// H-F5: 通用文件下载辅助函数
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+// H-F5: 客户端 CSV 生成（处理含逗号/引号/换行的字段值）
+function generateCsv(columns, rows) {
+  const header = columns.map(c => `"${(c.name || c).replace(/"/g, '""')}"`).join(',')
+  const dataRows = rows.map(row =>
+    columns.map(col => {
+      const key = col.name || col
+      const val = row[key]
+      if (val === null || val === undefined) return ''
+      return `"${String(val).replace(/"/g, '""')}"`
+    }).join(',')
+  )
+  return [header, ...dataRows].join('\n')
+}
+
+// H-F5: 客户端 JSON 生成
+function generateJson(columns, rows) {
+  return JSON.stringify(
+    rows.map(row => {
+      const obj = {}
+      for (const col of columns) {
+        const key = col.name || col
+        obj[key] = row[key] ?? null
+      }
+      return obj
+    }),
+    null,
+    2
+  )
+}
+
 async function handleExport(format) {
   if (!selectedConnectionId.value || !currentTab.value?.sql) return
+
+  const tab = currentTab.value
   try {
     if (format === 'excel') {
+      // Excel: 调用服务端导出接口
       const response = await queryStore.exportResults(
         selectedConnectionId.value,
-        currentTab.value.sql,
+        tab.sql,
         format
       )
       if (response instanceof Blob) {
-        const url = URL.createObjectURL(response)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `query_result.${format === 'excel' ? 'xlsx' : format}`
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(url)
+        downloadBlob(response, 'query_result.xlsx')
       }
-      ElMessage.success('Export complete')
+      ElMessage.success('Excel 导出完成')
+    } else if (format === 'csv') {
+      // H-F5: CSV 客户端生成并下载
+      if (!tab.columns?.length || !tab.rows?.length) {
+        ElMessage.warning('没有可导出的查询结果数据')
+        return
+      }
+      const csvContent = generateCsv(tab.columns, tab.rows)
+      const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8' })
+      downloadBlob(blob, 'query_result.csv')
+      ElMessage.success('CSV 导出完成')
+    } else if (format === 'json') {
+      // H-F5: JSON 客户端生成并下载
+      if (!tab.columns?.length || !tab.rows?.length) {
+        ElMessage.warning('没有可导出的查询结果数据')
+        return
+      }
+      const jsonContent = generateJson(tab.columns, tab.rows)
+      const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8' })
+      downloadBlob(blob, 'query_result.json')
+      ElMessage.success('JSON 导出完成')
     } else {
-      ElMessage.success(`${format.toUpperCase()} exported`)
+      ElMessage.warning(`不支持的导出格式: ${format}`)
     }
   } catch (error) {
-    ElMessage.error('Export failed')
+    ElMessage.error('导出失败')
   }
 }
 

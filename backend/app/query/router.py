@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,7 +56,7 @@ async def _get_engine(db: AsyncSession, connection_id: int):
     """Resolve connection and return its engine, or None."""
     connection = await conn_svc.get_connection_model(db, connection_id)
     if connection is None:
-        return None
+        return None, None
     config = {
         "db_type": connection.db_type,
         "host": connection.host,
@@ -68,7 +68,7 @@ async def _get_engine(db: AsyncSession, connection_id: int):
         "pool_size": connection.pool_size,
     }
     engine = pool_manager.get_or_create_pool(connection_id, config)
-    return engine
+    return engine, connection
 
 
 # --- Endpoints ---
@@ -84,12 +84,22 @@ async def execute_query(
     Records the execution in query history. In read-only mode,
     write statements are rejected by QueryGuard.
     """
-    engine = await _get_engine(db, req.connection_id)
+    engine, connection = await _get_engine(db, req.connection_id)
     if engine is None:
         return ErrorResponse(message="Connection not found.", code=404)
 
+    # 安全修复：服务端只读模式优先。连接级别的 read_only 标志覆盖请求级别参数
+    effective_read_only = req.read_only
+    if connection and getattr(connection, "read_only", False):
+        effective_read_only = True
+        logger.info(
+            "连接 %d (%s) 启用了服务端只读模式，强制 read_only=True",
+            req.connection_id,
+            connection.name,
+        )
+
     # Guard check
-    guard = QueryGuard(read_only=req.read_only)
+    guard = QueryGuard(read_only=effective_read_only)
     if not guard.is_allowed(req.sql):
         return ErrorResponse(
             message="This SQL statement is not allowed in read-only mode.",
@@ -154,7 +164,7 @@ async def export_query(
 
     Supported formats: csv, excel, json.
     """
-    engine = await _get_engine(db, req.connection_id)
+    engine, connection = await _get_engine(db, req.connection_id)
     if engine is None:
         return ErrorResponse(message="Connection not found.", code=404)
 
@@ -238,7 +248,7 @@ async def stream_export(
     everything into memory at once. Only CSV format is supported for
     streaming; use the regular /export endpoint for Excel or JSON.
     """
-    engine = await _get_engine(db, req.connection_id)
+    engine, connection = await _get_engine(db, req.connection_id)
     if engine is None:
         return ErrorResponse(message="Connection not found.", code=404)
 
@@ -362,13 +372,13 @@ async def toggle_favorite(
         return ErrorResponse(message="Failed to update favorite.", detail=str(exc))
 
 
-@router.delete("/history/{history_id}", response_model=None)
+@router.delete("/history/{history_id}", status_code=204)
 async def delete_history(
     history_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a query history entry."""
+    """Delete a query history entry. Returns 204 on success."""
     deleted = await history_svc.delete_history(db, history_id)
     if not deleted:
-        return ErrorResponse(message="History entry not found.", code=404)
-    return SuccessResponse(message="History entry deleted.")
+        raise HTTPException(status_code=404, detail="History entry not found.")
+    return None

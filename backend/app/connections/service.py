@@ -173,6 +173,8 @@ class ConnectionService:
             group_name=data.group_name,
             tags=json.dumps(data.tags),
             pool_size=getattr(data, "pool_size", 5),
+            # 安全修复：设置服务端只读模式
+            read_only=getattr(data, "read_only", False),
         )
         session.add(connection)
         await session.flush()
@@ -330,6 +332,8 @@ class ConnectionService:
             "group_name": connection.group_name,
             "tags": tags,
             "pool_size": connection.pool_size,
+            # 安全修复：返回服务端只读模式状态
+            "read_only": getattr(connection, "read_only", False),
             "created_at": connection.created_at,
             "updated_at": connection.updated_at,
         }

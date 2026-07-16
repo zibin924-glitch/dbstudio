@@ -9,7 +9,7 @@ class TestConnectionsAPI:
 
     async def test_create_connection(self, client: AsyncClient, sample_connection_config):
         response = await client.post("/api/connections/", json=sample_connection_config)
-        assert response.status_code == 200
+        assert response.status_code == 201
         data = response.json()
         # Response may be wrapped in SuccessResponse envelope
         payload = data.get("data", data)
@@ -71,7 +71,12 @@ class TestConnectionsAPI:
         conn_id = create_data.get("data", create_data).get("id", create_data.get("id"))
 
         delete_resp = await client.delete(f"/api/connections/{conn_id}")
+        # 200 with body (affected counts) or 204 no-content are both acceptable
         assert delete_resp.status_code in (200, 204)
+        if delete_resp.status_code == 200:
+            data = delete_resp.json()
+            payload = data.get("data", data)
+            assert payload.get("deleted") is True
 
     async def test_password_not_exposed(self, client: AsyncClient, sample_connection_config):
         create_resp = await client.post("/api/connections/", json=sample_connection_config)

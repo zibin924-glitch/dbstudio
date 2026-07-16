@@ -211,7 +211,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useConnectionStore } from '@/stores/connection.js'
 import { getSchemas, getTables, generateDoc, generateCode, generateDDL, convertDDL } from '@/api/index.js'
@@ -230,6 +230,8 @@ const generating = ref(false)
 const docFormat = ref('markdown')
 const docIncludes = ref(['columns', 'indexes', 'foreign_keys'])
 const docResult = ref('')
+// 单独存储文档的二进制 Blob 数据（修复原 docResult._blob 的 bug）
+const docBlob = ref(null)
 
 // Code options
 const codeLanguage = ref('java')
@@ -245,11 +247,40 @@ const ddlResult = ref('')
 
 onMounted(() => {
   connectionStore.fetchConnections().then(() => {
+    // 从 sessionStorage 恢复连接状态
+    connectionStore.restoreState()
     if (connectionStore.currentConnection) {
       selectedConnectionId.value = connectionStore.currentConnection.id
       onConnectionChange(selectedConnectionId.value)
     }
   })
+})
+
+// 监听当前连接变化，当连接被删除时重置生成器状态
+watch(() => connectionStore.currentConnection, (newConn) => {
+  if (!newConn) {
+    // 当前连接被删除，重置所有下游状态
+    selectedConnectionId.value = null
+    selectedSchema.value = ''
+    schemas.value = []
+    tables.value = []
+    selectedTables.value = []
+    docResult.value = ''
+    docBlob.value = null
+    codeResult.value = ''
+    ddlResult.value = ''
+  } else if (selectedConnectionId.value && !connectionStore.connections.find(c => c.id === selectedConnectionId.value)) {
+    // 当前选中的连接已不在列表中
+    selectedConnectionId.value = null
+    selectedSchema.value = ''
+    schemas.value = []
+    tables.value = []
+    selectedTables.value = []
+    docResult.value = ''
+    docBlob.value = null
+    codeResult.value = ''
+    ddlResult.value = ''
+  }
 })
 
 async function onConnectionChange(connId) {
@@ -297,6 +328,7 @@ async function handleGenerateDoc() {
 
   generating.value = true
   docResult.value = ''
+  docBlob.value = null
   try {
     const response = await generateDoc({
       connection_id: selectedConnectionId.value,
@@ -309,11 +341,13 @@ async function handleGenerateDoc() {
     // If the response is a blob (for word/pdf), handle differently
     if (response instanceof Blob) {
       docResult.value = `[Binary document generated - click Download to save]`
-      // Store blob for download
-      docResult._blob = response
+      // 将 Blob 存储到独立的 ref 中，用于下载
+      docBlob.value = response
     } else {
       const data = response.data || response
       docResult.value = typeof data === 'string' ? data : (data.content || JSON.stringify(data, null, 2))
+      // 文本结果不需要 Blob
+      docBlob.value = null
     }
     ElMessage.success('Document generated')
   } catch (error) {
@@ -425,8 +459,9 @@ function copyToClipboard(text) {
 }
 
 function handleDownloadDoc() {
-  if (docResult.value._blob) {
-    downloadBlob(docResult.value._blob, `document.${getFileExtension(docFormat.value)}`)
+  // 使用独立的 docBlob ref 获取二进制数据
+  if (docBlob.value) {
+    downloadBlob(docBlob.value, `document.${getFileExtension(docFormat.value)}`)
   } else {
     downloadText(docResult.value, `document.${getFileExtension(docFormat.value)}`)
   }

@@ -370,7 +370,10 @@ class ExplorerService:
                         properties["row_count_estimate"] = int(row[0]) if row[0] else 0
             else:
                 # Generic fallback: COUNT(*) (may be slow on large tables)
-                qualified = f"{schema}.{table_name}" if schema else table_name
+                # 安全修复：使用双引号对标识符进行转义引用，防止 SQL 注入
+                quoted_table = f'"{table_name}"'
+                quoted_schema = f'"{schema}"' if schema else None
+                qualified = f"{quoted_schema}.{quoted_table}" if quoted_schema else quoted_table
                 sql = text(f"SELECT COUNT(*) FROM {qualified}")
                 with engine.connect() as conn:
                     result = conn.execute(sql)

@@ -1,6 +1,7 @@
 """FastAPI router for database metadata exploration endpoints."""
 
 import logging
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -14,6 +15,28 @@ from app.explorer.service import ExplorerService
 from app.utils.responses import ErrorResponse, SuccessResponse
 
 logger = logging.getLogger(__name__)
+
+# 安全修复：严格正则校验数据库标识符（仅允许字母、数字、下划线），防止 SQL 注入
+_IDENTIFIER_RE = re.compile(r'^[a-zA-Z0-9_]+$')
+
+
+def _validate_identifier(name: str, label: str = "Identifier") -> Optional[str]:
+    """校验数据库标识符（表名、Schema 名、视图名等）是否合法。
+
+    仅允许 [a-zA-Z0-9_] 字符，拒绝任何特殊字符以防止 SQL 注入。
+
+    Args:
+        name: 待校验的标识符字符串。
+        label: 用于错误消息的标识类型描述。
+
+    Returns:
+        None 表示合法，否则返回错误消息字符串。
+    """
+    if not name:
+        return None
+    if not _IDENTIFIER_RE.match(name):
+        return f"{label} '{name}' contains invalid characters. Only letters, digits, and underscores are allowed."
+    return None
 
 router = APIRouter(prefix="/explorer", tags=["Explorer"])
 
@@ -74,6 +97,12 @@ async def list_tables(
     db: AsyncSession = Depends(get_db),
 ):
     """List all tables in the connected database, optionally filtered by schema."""
+    # 安全修复：校验 schema 名称合法性
+    if schema:
+        err = _validate_identifier(schema, "Schema name")
+        if err:
+            return ErrorResponse(message=err, code=400)
+
     resolved = await _resolve_connection(db, connection_id)
     if resolved is None:
         return ErrorResponse(message="Connection not found.", code=404)
@@ -92,6 +121,15 @@ async def get_columns(
     db: AsyncSession = Depends(get_db),
 ):
     """Get detailed column information for a specific table."""
+    # 安全修复：校验表名和 schema 名合法性
+    err = _validate_identifier(table_name, "Table name")
+    if err:
+        return ErrorResponse(message=err, code=400)
+    if schema:
+        err = _validate_identifier(schema, "Schema name")
+        if err:
+            return ErrorResponse(message=err, code=400)
+
     resolved = await _resolve_connection(db, connection_id)
     if resolved is None:
         return ErrorResponse(message="Connection not found.", code=404)
@@ -114,6 +152,15 @@ async def get_indexes(
     db: AsyncSession = Depends(get_db),
 ):
     """Get index information for a specific table."""
+    # 安全修复：校验表名和 schema 名合法性
+    err = _validate_identifier(table_name, "Table name")
+    if err:
+        return ErrorResponse(message=err, code=400)
+    if schema:
+        err = _validate_identifier(schema, "Schema name")
+        if err:
+            return ErrorResponse(message=err, code=400)
+
     resolved = await _resolve_connection(db, connection_id)
     if resolved is None:
         return ErrorResponse(message="Connection not found.", code=404)
@@ -132,6 +179,15 @@ async def get_foreign_keys(
     db: AsyncSession = Depends(get_db),
 ):
     """Get foreign key information for a specific table."""
+    # 安全修复：校验表名和 schema 名合法性
+    err = _validate_identifier(table_name, "Table name")
+    if err:
+        return ErrorResponse(message=err, code=400)
+    if schema:
+        err = _validate_identifier(schema, "Schema name")
+        if err:
+            return ErrorResponse(message=err, code=400)
+
     resolved = await _resolve_connection(db, connection_id)
     if resolved is None:
         return ErrorResponse(message="Connection not found.", code=404)
@@ -155,6 +211,15 @@ async def preview_table_data(
 
     Returns column names, rows, and pagination metadata.
     """
+    # 安全修复：校验表名和 schema 名合法性，防止 SQL 注入
+    err = _validate_identifier(table_name, "Table name")
+    if err:
+        return ErrorResponse(message=err, code=400)
+    if schema:
+        err = _validate_identifier(schema, "Schema name")
+        if err:
+            return ErrorResponse(message=err, code=400)
+
     resolved = await _resolve_connection(db, connection_id)
     if resolved is None:
         return ErrorResponse(message="Connection not found.", code=404)
@@ -162,7 +227,10 @@ async def preview_table_data(
     connection, config, engine, inspector = resolved
     offset = (page - 1) * page_size
 
-    qualified_name = f"{schema}.{table_name}" if schema else table_name
+    # 安全修复：使用双引号对标识符进行转义引用，防止 SQL 注入
+    quoted_table = f'"{table_name}"'
+    quoted_schema = f'"{schema}"' if schema else None
+    qualified_name = f"{quoted_schema}.{quoted_table}" if quoted_schema else quoted_table
 
     try:
         with engine.connect() as conn:
@@ -200,6 +268,12 @@ async def get_database_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Get aggregate database statistics (table count, row estimates, etc.)."""
+    # 安全修复：校验 schema 名称合法性
+    if schema:
+        err = _validate_identifier(schema, "Schema name")
+        if err:
+            return ErrorResponse(message=err, code=400)
+
     resolved = await _resolve_connection(db, connection_id)
     if resolved is None:
         return ErrorResponse(message="Connection not found.", code=404)
@@ -217,6 +291,12 @@ async def list_views(
     db: AsyncSession = Depends(get_db),
 ):
     """List all views in the connected database, optionally filtered by schema."""
+    # 安全修复：校验 schema 名称合法性
+    if schema:
+        err = _validate_identifier(schema, "Schema name")
+        if err:
+            return ErrorResponse(message=err, code=400)
+
     resolved = await _resolve_connection(db, connection_id)
     if resolved is None:
         return ErrorResponse(message="Connection not found.", code=404)
@@ -235,6 +315,15 @@ async def get_view_definition(
     db: AsyncSession = Depends(get_db),
 ):
     """Get the SQL definition of a specific view."""
+    # 安全修复：校验视图名和 schema 名合法性
+    err = _validate_identifier(view_name, "View name")
+    if err:
+        return ErrorResponse(message=err, code=400)
+    if schema:
+        err = _validate_identifier(schema, "Schema name")
+        if err:
+            return ErrorResponse(message=err, code=400)
+
     resolved = await _resolve_connection(db, connection_id)
     if resolved is None:
         return ErrorResponse(message="Connection not found.", code=404)
@@ -260,6 +349,12 @@ async def list_procedures(
 
     Supported for MySQL and Oracle connections.
     """
+    # 安全修复：校验 schema 名称合法性
+    if schema:
+        err = _validate_identifier(schema, "Schema name")
+        if err:
+            return ErrorResponse(message=err, code=400)
+
     resolved = await _resolve_connection(db, connection_id)
     if resolved is None:
         return ErrorResponse(message="Connection not found.", code=404)
@@ -282,6 +377,12 @@ async def list_triggers(
 
     Supported for MySQL, PostgreSQL, and Oracle connections.
     """
+    # 安全修复：校验 schema 名称合法性
+    if schema:
+        err = _validate_identifier(schema, "Schema name")
+        if err:
+            return ErrorResponse(message=err, code=400)
+
     resolved = await _resolve_connection(db, connection_id)
     if resolved is None:
         return ErrorResponse(message="Connection not found.", code=404)
@@ -302,6 +403,12 @@ async def list_functions(
 
     Currently supported for PostgreSQL connections only.
     """
+    # 安全修复：校验 schema 名称合法性
+    if schema:
+        err = _validate_identifier(schema, "Schema name")
+        if err:
+            return ErrorResponse(message=err, code=400)
+
     resolved = await _resolve_connection(db, connection_id)
     if resolved is None:
         return ErrorResponse(message="Connection not found.", code=404)
@@ -322,6 +429,12 @@ async def list_sequences(
 
     Supported for PostgreSQL and Oracle connections.
     """
+    # 安全修复：校验 schema 名称合法性
+    if schema:
+        err = _validate_identifier(schema, "Schema name")
+        if err:
+            return ErrorResponse(message=err, code=400)
+
     resolved = await _resolve_connection(db, connection_id)
     if resolved is None:
         return ErrorResponse(message="Connection not found.", code=404)

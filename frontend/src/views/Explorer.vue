@@ -141,7 +141,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useConnectionStore } from '@/stores/connection.js'
 import { getStats } from '@/api/index.js'
 import DbTree from '@/components/DbTree.vue'
@@ -169,11 +169,30 @@ const currentConnectionType = computed(() => {
 
 onMounted(() => {
   connectionStore.fetchConnections().then(() => {
+    // 从 sessionStorage 恢复连接状态
+    connectionStore.restoreState()
     if (connectionStore.currentConnection) {
       selectedConnectionId.value = connectionStore.currentConnection.id
       onConnectionChange(selectedConnectionId.value)
     }
   })
+})
+
+// 监听当前连接变化，当连接被删除时重置视图状态
+watch(() => connectionStore.currentConnection, (newConn) => {
+  if (!newConn) {
+    // 当前连接被删除，重置所有下游状态
+    selectedConnectionId.value = null
+    selectedNode.value = null
+    stats.value = null
+    showErDiagram.value = false
+  } else if (selectedConnectionId.value && !connectionStore.connections.find(c => c.id === selectedConnectionId.value)) {
+    // 当前选中的连接已不在列表中
+    selectedConnectionId.value = null
+    selectedNode.value = null
+    stats.value = null
+    showErDiagram.value = false
+  }
 })
 
 async function onConnectionChange(connId) {

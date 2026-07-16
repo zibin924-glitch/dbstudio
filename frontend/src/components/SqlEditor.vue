@@ -30,7 +30,9 @@ const props = defineProps({
   language: { type: String, default: 'sql' },
   readOnly: { type: Boolean, default: false },
   height: { type: String, default: '100%' },
-  connectionId: { type: [String, Number], default: null }
+  connectionId: { type: [String, Number], default: null },
+  // H-F2: 新增 schema 属性，用于多 schema 数据库的自动补全
+  schema: { type: String, default: null }
 })
 
 const emit = defineEmits(['update:modelValue', 'execute'])
@@ -40,6 +42,8 @@ const connectionStore = useConnectionStore()
 let editor = null
 let isUpdatingFromProp = false
 let completionProviderDisposable = null
+// H-F3: 暗色模式观察器，用于同步 Monaco 编辑器主题
+let darkModeObserver = null
 
 // ---- Schema cache for auto-completion ----
 const schemaCache = ref({
@@ -56,16 +60,25 @@ function getCurrentConnectionId() {
 async function fetchTables() {
   const connId = getCurrentConnectionId()
   if (!connId) return []
-  // Return cached if available
-  if (schemaCache.value.tables.length > 0) return schemaCache.value.tables
-  // Deduplicate concurrent requests
+  // 返回缓存（按 schema 缓存）
+  const cacheKey = props.schema || '__default__'
+  if (!schemaCache.value._tablesBySchema) schemaCache.value._tablesBySchema = {}
+  if (schemaCache.value._tablesBySchema[cacheKey]?.length > 0) {
+    return schemaCache.value._tablesBySchema[cacheKey]
+  }
+  // 去重并发请求
   if (tablesFetchPromise) return tablesFetchPromise
   tablesFetchPromise = (async () => {
     try {
-      const resp = await getTables(connId)
+      // H-F2: 传递 schema 参数，支持多 schema 数据库
+      const resp = await getTables(connId, props.schema)
       const tables = (resp.data || resp || []).map(t => typeof t === 'string' ? t : (t.table_name || t.name || ''))
-      schemaCache.value.tables = tables.filter(Boolean)
-      return schemaCache.value.tables
+      const filtered = tables.filter(Boolean)
+      if (!schemaCache.value._tablesBySchema) schemaCache.value._tablesBySchema = {}
+      schemaCache.value._tablesBySchema[cacheKey] = filtered
+      // 兼容旧的 tables 字段
+      schemaCache.value.tables = filtered
+      return filtered
     } catch {
       return []
     } finally {
@@ -78,14 +91,16 @@ async function fetchTables() {
 async function fetchColumnsForTable(tableName) {
   const connId = getCurrentConnectionId()
   if (!connId) return []
-  const cacheKey = tableName.toLowerCase()
+  // H-F2: 缓存键包含 schema，避免不同 schema 下表名冲突
+  const cacheKey = `${props.schema || '__default__'}.${tableName.toLowerCase()}`
   if (schemaCache.value.columnsByTable[cacheKey]) {
     return schemaCache.value.columnsByTable[cacheKey]
   }
   if (columnFetchPromises[cacheKey]) return columnFetchPromises[cacheKey]
   columnFetchPromises[cacheKey] = (async () => {
     try {
-      const resp = await getColumns(connId, null, tableName)
+      // H-F2: 传递 schema 参数给 getColumns
+      const resp = await getColumns(connId, props.schema, tableName)
       const cols = (resp.data || resp || []).map(c => ({
         name: c.column_name || c.name || '',
         data_type: c.data_type || c.type || ''
@@ -101,9 +116,9 @@ async function fetchColumnsForTable(tableName) {
   return columnFetchPromises[cacheKey]
 }
 
-// Clear cache when connection changes
-watch(() => props.connectionId, () => {
-  schemaCache.value = { tables: [], columnsByTable: {} }
+// 连接或 schema 变化时清除缓存
+watch([() => props.connectionId, () => props.schema], () => {
+  schemaCache.value = { tables: [], columnsByTable: {}, _tablesBySchema: {} }
 })
 
 // SQL keywords that suggest a table or column reference follows
@@ -286,6 +301,22 @@ onMounted(() => {
       handleFormat()
     }
   })
+
+  // H-F3: 监听暗色模式切换，同步 Monaco 编辑器主题
+  function syncMonacoTheme() {
+    const isDark = document.documentElement.classList.contains('dark')
+    monaco.editor.setTheme(isDark ? 'vs-dark' : 'vs')
+  }
+  // 初始化时应用当前主题
+  syncMonacoTheme()
+  // 使用 MutationObserver 监听 html 元素的 class 变化
+  darkModeObserver = new MutationObserver(() => {
+    syncMonacoTheme()
+  })
+  darkModeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['class']
+  })
 })
 
 watch(() => props.modelValue, (newVal) => {
@@ -303,6 +334,11 @@ watch(() => props.readOnly, (newVal) => {
 })
 
 onBeforeUnmount(() => {
+  // H-F3: 清理暗色模式观察器
+  if (darkModeObserver) {
+    darkModeObserver.disconnect()
+    darkModeObserver = null
+  }
   if (completionProviderDisposable) {
     completionProviderDisposable.dispose()
     completionProviderDisposable = null
