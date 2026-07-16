@@ -227,7 +227,8 @@ dbstudio/
 │   ├── 数据库开发工具需求规格说明书.md
 │   ├── DBStudio项目整体计划.md
 │   ├── DBStudio测试计划与用例文档.md
-│   └── DBStudio项目完成总结.md
+│   ├── DBStudio项目完成总结.md
+│   └── DBStudio需求审查报告.md
 └── README.md
 ```
 
@@ -268,6 +269,7 @@ dbstudio/
 | [DBStudio 项目整体计划](docs/DBStudio项目整体计划.md) | 三阶段开发计划（MVP → 增强 → 高级），含 Sprint 分解、甘特图、风险管理、附录 C 开发完成状态 |
 | [DBStudio 测试计划与用例文档](docs/DBStudio测试计划与用例文档.md) | 测试策略、环境搭建、150+ 测试用例定义，第九章包含实际执行结果（82 个测试全部通过） |
 | [DBStudio 项目完成总结](docs/DBStudio项目完成总结.md) | 交付成果总览、测试结果、开发过程中的问题与修复记录、后续建议 |
+| [DBStudio 需求审查报告](docs/DBStudio需求审查报告.md) | 对照需求规格逐项审查，85 项需求实现状态、4 个阻断级 Bug、15 条改善建议 |
 
 ---
 
