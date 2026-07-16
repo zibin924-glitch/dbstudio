@@ -9,6 +9,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.connections.pool import pool_manager
 from app.connections.service import ConnectionService
 from app.database.session import get_db
@@ -97,12 +98,26 @@ async def execute_query(
 
     executor = QueryExecutor()
     try:
-        result = executor.execute(
+        result = await executor.execute(
             connection=engine,
             sql=req.sql,
             page=req.page,
             page_size=req.page_size,
+            timeout=settings.QUERY_TIMEOUT,
         )
+
+        # Check for timeout error returned by executor
+        if "error" in result:
+            await history_svc.record(
+                session=db,
+                connection_id=req.connection_id,
+                sql_text=req.sql,
+                duration_ms=result["duration_ms"],
+                row_count=0,
+                status="error",
+                error_message=result["error"],
+            )
+            return ErrorResponse(message=result["error"], code=408)
 
         # Record success in history
         await history_svc.record(
@@ -152,24 +167,33 @@ async def export_query(
 
     executor = QueryExecutor()
     try:
-        # Execute with a large page_size to get all rows
-        result = executor.execute(
+        # Execute with the configured max export rows
+        result = await executor.execute(
             connection=engine,
             sql=req.sql,
             page=1,
-            page_size=50000,
+            page_size=settings.MAX_EXPORT_ROWS,
+            timeout=settings.QUERY_TIMEOUT,
         )
     except Exception as exc:
         return ErrorResponse(message="Query execution failed.", detail=str(exc))
 
+    if "error" in result:
+        return ErrorResponse(message=result["error"], code=408)
+
     columns = result["columns"]
     # For export we want all rows, not just the current page
-    # Re-fetch all rows
+    # Re-fetch all rows using asyncio.to_thread to avoid blocking
     try:
+        import asyncio
         from sqlalchemy import text as sa_text
-        with engine.connect() as conn:
-            full_result = conn.execute(sa_text(req.sql.strip().rstrip(";")))
-            all_rows = [list(row) for row in full_result.fetchall()]
+
+        def _fetch_all():
+            with engine.connect() as conn:
+                full_result = conn.execute(sa_text(req.sql.strip().rstrip(";")))
+                return [list(row) for row in full_result.fetchall()]
+
+        all_rows = await asyncio.to_thread(_fetch_all)
     except Exception as exc:
         return ErrorResponse(message="Failed to fetch data for export.", detail=str(exc))
 
@@ -203,6 +227,89 @@ async def export_query(
         )
 
 
+@router.post("/export/stream", response_model=None)
+async def stream_export(
+    req: ExportRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Execute a SQL query and stream results as CSV for large datasets.
+
+    Streams rows in batches to handle large result sets without loading
+    everything into memory at once. Only CSV format is supported for
+    streaming; use the regular /export endpoint for Excel or JSON.
+    """
+    engine = await _get_engine(db, req.connection_id)
+    if engine is None:
+        return ErrorResponse(message="Connection not found.", code=404)
+
+    # Only SELECT allowed for export
+    guard = QueryGuard(read_only=True)
+    if not guard.is_allowed(req.sql):
+        return ErrorResponse(
+            message="Only SELECT queries can be exported.", code=403
+        )
+
+    fmt = req.format.lower()
+    if fmt not in ("csv",):
+        return ErrorResponse(
+            message="Streaming export only supports CSV format. Use /export for Excel or JSON.",
+            code=400,
+        )
+
+    import asyncio
+    import csv as csv_mod
+    import io as _io
+    from sqlalchemy import text as sa_text
+
+    sql_stripped = req.sql.strip().rstrip(";")
+    chunk_size = 5000
+
+    # Execute query once in a thread to collect all data
+    def _fetch_all_for_stream():
+        with engine.connect() as conn:
+            result = conn.execute(sa_text(sql_stripped))
+            cols = list(result.keys())
+            rows = [list(row) for row in result.fetchmany(settings.MAX_EXPORT_ROWS)]
+            return cols, rows
+
+    try:
+        columns, all_rows = await asyncio.to_thread(_fetch_all_for_stream)
+    except Exception as exc:
+        return ErrorResponse(message="Query execution failed.", detail=str(exc))
+
+    async def generate_csv_stream():
+        """Yield CSV rows in chunks from pre-fetched data."""
+        # BOM for Excel compatibility
+        yield "\ufeff"
+
+        # Yield header row
+        buf = _io.StringIO()
+        writer = csv_mod.writer(buf, quoting=csv_mod.QUOTE_MINIMAL)
+        writer.writerow(columns)
+        yield buf.getvalue()
+
+        # Yield data rows in chunks
+        for start in range(0, len(all_rows), chunk_size):
+            chunk = all_rows[start : start + chunk_size]
+            buf = _io.StringIO()
+            writer = csv_mod.writer(buf, quoting=csv_mod.QUOTE_MINIMAL)
+            for row in chunk:
+                cleaned = []
+                for val in row:
+                    if val is None:
+                        cleaned.append("")
+                    else:
+                        cleaned.append(str(val))
+                writer.writerow(cleaned)
+            yield buf.getvalue()
+
+    return StreamingResponse(
+        generate_csv_stream(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=export.csv"},
+    )
+
+
 @router.get("/history", response_model=None)
 async def list_history(
     connection_id: Optional[int] = Query(default=None, description="Filter by connection"),
@@ -224,6 +331,21 @@ async def list_history(
         return SuccessResponse(data=entries)
     except Exception as exc:
         return ErrorResponse(message="Failed to retrieve history.", detail=str(exc))
+
+
+@router.get("/history/{history_id}", response_model=None)
+async def get_history_entry(
+    history_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a single query history entry by its ID."""
+    try:
+        entry = await history_svc.get_history(db, history_id)
+        if not entry:
+            return ErrorResponse(message="History entry not found.", code=404)
+        return SuccessResponse(data=entry)
+    except Exception as exc:
+        return ErrorResponse(message="Failed to retrieve history entry.", detail=str(exc))
 
 
 @router.patch("/history/{history_id}/favorite", response_model=None)

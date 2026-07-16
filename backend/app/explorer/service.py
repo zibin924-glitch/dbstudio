@@ -6,6 +6,8 @@ from typing import Optional
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Inspector
 
+from app.explorer.dialects import get_dialect
+
 logger = logging.getLogger(__name__)
 
 
@@ -177,6 +179,132 @@ class ExplorerService:
             return sorted(self.inspector.get_view_names(schema=schema))
         except Exception as exc:
             logger.warning("Failed to list views for schema=%s: %s", schema, exc)
+            return []
+
+    def get_view_definition(
+        self, view_name: str, schema: Optional[str] = None
+    ) -> Optional[str]:
+        """Return the SQL definition of a specific view.
+
+        Args:
+            view_name: Name of the view.
+            schema: Optional schema name.
+
+        Returns:
+            The SQL definition string, or None if unavailable.
+        """
+        try:
+            return self.inspector.get_view_definition(view_name, schema=schema)
+        except Exception as exc:
+            logger.warning("Failed to get view definition for %s: %s", view_name, exc)
+            return None
+
+    def get_stored_procedures(
+        self, db_type: str, schema: Optional[str] = None
+    ) -> list[dict]:
+        """Return stored procedures via the dialect-specific query layer.
+
+        Args:
+            db_type: Database type (e.g. 'mysql', 'oracle').
+            schema: Optional schema/database name.
+
+        Returns:
+            List of dicts describing each stored procedure, or an empty list
+            if the dialect does not support this operation.
+        """
+        try:
+            engine = self.inspector.engine
+            dialect = get_dialect(db_type, engine)
+            return dialect.get_stored_procedures(schema=schema)
+        except (ValueError, AttributeError) as exc:
+            logger.warning(
+                "Stored procedures not supported for db_type=%s: %s", db_type, exc
+            )
+            return []
+        except Exception as exc:
+            logger.warning("Failed to get stored procedures: %s", exc)
+            return []
+
+    def get_triggers(
+        self, db_type: str, schema: Optional[str] = None
+    ) -> list[dict]:
+        """Return triggers via the dialect-specific query layer.
+
+        Args:
+            db_type: Database type (e.g. 'mysql', 'postgresql', 'oracle').
+            schema: Optional schema/database name.
+
+        Returns:
+            List of dicts describing each trigger, or an empty list if the
+            dialect does not support this operation.
+        """
+        try:
+            engine = self.inspector.engine
+            dialect = get_dialect(db_type, engine)
+            return dialect.get_triggers(schema=schema)
+        except (ValueError, AttributeError) as exc:
+            logger.warning(
+                "Triggers not supported for db_type=%s: %s", db_type, exc
+            )
+            return []
+        except Exception as exc:
+            logger.warning("Failed to get triggers: %s", exc)
+            return []
+
+    def get_functions(
+        self, db_type: str, schema: Optional[str] = None
+    ) -> list[dict]:
+        """Return functions via the dialect-specific query layer.
+
+        Currently only PostgreSQL exposes a ``get_functions`` method.
+
+        Args:
+            db_type: Database type (expected 'postgresql').
+            schema: Optional schema name.
+
+        Returns:
+            List of dicts describing each function, or an empty list if the
+            dialect does not support this operation.
+        """
+        try:
+            engine = self.inspector.engine
+            dialect = get_dialect(db_type, engine)
+            return dialect.get_functions(schema=schema)
+        except (ValueError, AttributeError) as exc:
+            logger.warning(
+                "Functions not supported for db_type=%s: %s", db_type, exc
+            )
+            return []
+        except Exception as exc:
+            logger.warning("Failed to get functions: %s", exc)
+            return []
+
+    def get_sequences(
+        self, db_type: str, schema: Optional[str] = None
+    ) -> list[dict]:
+        """Return sequences via the dialect-specific query layer.
+
+        Supported by PostgreSQL and Oracle dialects.
+
+        Args:
+            db_type: Database type (expected 'postgresql' or 'oracle').
+            schema: Optional schema name.
+
+        Returns:
+            List of dicts describing each sequence, or an empty list if the
+            dialect does not support this operation.
+        """
+        try:
+            engine = self.inspector.engine
+            dialect = get_dialect(db_type, engine)
+            return dialect.get_sequences(schema=schema)
+        except (ValueError, AttributeError) as exc:
+            logger.warning(
+                "Sequences not supported for db_type=%s: %s", db_type, exc
+            )
+            return []
+        except Exception as exc:
+            logger.warning("Failed to get sequences: %s", exc)
             return []
 
     def get_table_properties(

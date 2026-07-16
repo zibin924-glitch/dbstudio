@@ -12,6 +12,7 @@ from app.connections.models import (
     ConnectionTestResponse,
     ConnectionUpdate,
 )
+from app.connections.pool import pool_manager
 from app.connections.service import ConnectionService
 from app.database.session import get_db
 from app.utils.responses import ErrorResponse, SuccessResponse
@@ -80,6 +81,7 @@ async def update_connection(
     result = await svc.update_connection(db, connection_id, data)
     if result is None:
         return ErrorResponse(message="Connection not found.", code=404)
+    pool_manager.dispose_pool(connection_id)
     return SuccessResponse(data=result, message="Connection updated successfully.")
 
 
@@ -95,6 +97,7 @@ async def delete_connection(
     deleted = await svc.delete_connection(db, connection_id)
     if not deleted:
         return ErrorResponse(message="Connection not found.", code=404)
+    pool_manager.dispose_pool(connection_id)
     return None
 
 
@@ -110,3 +113,34 @@ async def test_connection(data: ConnectionTestRequest):
     if response.status == "success":
         return SuccessResponse(data=response.model_dump(), message=response.message)
     return ErrorResponse(message=response.message, code=400)
+
+
+@router.post("/{connection_id}/test", response_model=None)
+async def test_saved_connection(
+    connection_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Test an existing saved connection.
+
+    Loads the connection from the database, decrypts the password,
+    and attempts to connect.
+    """
+    conn = await svc.get_connection_model(db, connection_id)
+    if not conn:
+        return ErrorResponse(message="Connection not found.", code=404)
+
+    password = svc.get_decrypted_password(conn)
+    config = {
+        "db_type": conn.db_type,
+        "host": conn.host,
+        "port": conn.port,
+        "username": conn.username,
+        "password": password,
+        "database_name": conn.database_name,
+        "extra_params": conn.extra_params,
+    }
+
+    result = svc.test_connection(config)
+    if result["status"] == "success":
+        return SuccessResponse(data=result)
+    return ErrorResponse(message=result["message"], code=400)

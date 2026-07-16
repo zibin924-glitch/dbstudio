@@ -86,6 +86,28 @@ class Connection(Base):
         "ApiDefinition", back_populates="connection", cascade="all, delete-orphan"
     )
 
+    def get_extra_params(self) -> dict:
+        """Parse JSON-encoded extra_params into a dict."""
+        import json as _json
+
+        if self.extra_params:
+            try:
+                return _json.loads(self.extra_params)
+            except (_json.JSONDecodeError, TypeError):
+                pass
+        return {}
+
+    def get_tags(self) -> list:
+        """Parse JSON-encoded tags into a list."""
+        import json as _json
+
+        if self.tags:
+            try:
+                return _json.loads(self.tags)
+            except (_json.JSONDecodeError, TypeError):
+                pass
+        return []
+
     def __repr__(self) -> str:
         return f"<Connection id={self.id} name={self.name!r} db_type={self.db_type!r}>"
 

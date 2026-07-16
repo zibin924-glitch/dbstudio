@@ -83,19 +83,64 @@ async def _resolve(db: AsyncSession, connection_id: int):
     return connection, engine, inspector
 
 
-def _gather_table_metadata(inspector, table_name: str, schema: Optional[str], db_type: str) -> dict:
-    """Gather complete metadata for a single table."""
+def _gather_table_metadata(engine, inspector, table_name: str, schema: Optional[str], db_type: str) -> dict:
+    """Gather complete metadata for a single table, including its comment."""
     explorer = ExplorerService(inspector)
     columns = explorer.get_columns(table_name, schema=schema)
     indexes = explorer.get_indexes(table_name, schema=schema)
     foreign_keys = explorer.get_foreign_keys(table_name, schema=schema)
+
+    # Fetch table comment
+    comment = ""
+    try:
+        from sqlalchemy import text
+
+        if db_type == "mysql":
+            with engine.connect() as conn:
+                result = conn.execute(
+                    text(
+                        "SELECT TABLE_COMMENT FROM INFORMATION_SCHEMA.TABLES "
+                        "WHERE TABLE_NAME = :tbl AND TABLE_SCHEMA = DATABASE()"
+                    ),
+                    {"tbl": table_name},
+                )
+                row = result.fetchone()
+                if row:
+                    comment = row[0] or ""
+        elif db_type == "postgresql":
+            with engine.connect() as conn:
+                result = conn.execute(
+                    text(
+                        "SELECT obj_description(c.oid) FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE c.relname = :tbl AND n.nspname = 'public'"
+                    ),
+                    {"tbl": table_name},
+                )
+                row = result.fetchone()
+                if row and row[0]:
+                    comment = row[0]
+        elif db_type == "oracle":
+            with engine.connect() as conn:
+                result = conn.execute(
+                    text(
+                        "SELECT COMMENTS FROM ALL_TAB_COMMENTS "
+                        "WHERE TABLE_NAME = :tbl AND OWNER = USER"
+                    ),
+                    {"tbl": table_name.upper()},
+                )
+                row = result.fetchone()
+                if row and row[0]:
+                    comment = row[0]
+    except Exception:
+        comment = ""
 
     return {
         "name": table_name,
         "columns": columns,
         "indexes": indexes,
         "foreign_keys": foreign_keys,
-        "comment": "",
+        "comment": comment,
         "db_type": db_type,
     }
 
@@ -123,7 +168,7 @@ async def generate_document(
     # Gather metadata for requested tables
     tables_metadata = []
     for table_name in req.tables:
-        meta = _gather_table_metadata(inspector, table_name, req.schema_name, db_type)
+        meta = _gather_table_metadata(engine, inspector, table_name, req.schema_name, db_type)
         # Generate DDL for each table
         ddl = DDLGenerator.generate_create_table(meta)
         meta["ddl"] = ddl
@@ -182,7 +227,7 @@ async def generate_code(
     # Gather metadata for requested tables
     tables_metadata = []
     for table_name in req.tables:
-        meta = _gather_table_metadata(inspector, table_name, req.schema_name, db_type)
+        meta = _gather_table_metadata(engine, inspector, table_name, req.schema_name, db_type)
         tables_metadata.append(meta)
 
     # Generate code for each table
@@ -219,7 +264,7 @@ async def generate_ddl(
 
     tables_metadata = []
     for table_name in req.tables:
-        meta = _gather_table_metadata(inspector, table_name, req.schema_name, db_type)
+        meta = _gather_table_metadata(engine, inspector, table_name, req.schema_name, db_type)
         tables_metadata.append(meta)
 
     ddl_parts = []

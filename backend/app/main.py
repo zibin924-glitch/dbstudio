@@ -37,6 +37,14 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Initialising local database tables …")
     await init_db()
+
+    # Reload API tokens from database into in-memory TokenManager
+    from app.database.session import AsyncSessionLocal
+    from app.api_gateway.router import reload_tokens_from_db
+
+    async with AsyncSessionLocal() as session:
+        await reload_tokens_from_db(session)
+
     logger.info("DBStudio %s ready  (debug=%s)", settings.APP_VERSION, settings.DEBUG)
 
     yield  # ── Application runs ──────────────────────────────────────────

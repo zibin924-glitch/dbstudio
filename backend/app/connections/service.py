@@ -172,7 +172,7 @@ class ConnectionService:
             extra_params=json.dumps(data.extra_params) if data.extra_params else None,
             group_name=data.group_name,
             tags=json.dumps(data.tags),
-            pool_size=5,
+            pool_size=getattr(data, "pool_size", 5),
         )
         session.add(connection)
         await session.flush()

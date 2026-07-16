@@ -208,3 +208,125 @@ async def get_database_stats(
     explorer = ExplorerService(inspector)
     stats = explorer.get_database_stats(schema=schema)
     return SuccessResponse(data=stats)
+
+
+@router.get("/{connection_id}/views", response_model=None)
+async def list_views(
+    connection_id: int,
+    schema: Optional[str] = Query(default=None, description="Schema name filter"),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all views in the connected database, optionally filtered by schema."""
+    resolved = await _resolve_connection(db, connection_id)
+    if resolved is None:
+        return ErrorResponse(message="Connection not found.", code=404)
+
+    connection, config, engine, inspector = resolved
+    explorer = ExplorerService(inspector)
+    views = explorer.get_view_list(schema=schema)
+    return SuccessResponse(data=views)
+
+
+@router.get("/{connection_id}/views/{view_name}/definition", response_model=None)
+async def get_view_definition(
+    connection_id: int,
+    view_name: str,
+    schema: Optional[str] = Query(default=None, description="Schema name"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the SQL definition of a specific view."""
+    resolved = await _resolve_connection(db, connection_id)
+    if resolved is None:
+        return ErrorResponse(message="Connection not found.", code=404)
+
+    connection, config, engine, inspector = resolved
+    explorer = ExplorerService(inspector)
+    definition = explorer.get_view_definition(view_name, schema=schema)
+    if definition is None:
+        return ErrorResponse(
+            message=f"View '{view_name}' not found or definition unavailable.",
+            code=404,
+        )
+    return SuccessResponse(data={"view_name": view_name, "definition": definition})
+
+
+@router.get("/{connection_id}/procedures", response_model=None)
+async def list_procedures(
+    connection_id: int,
+    schema: Optional[str] = Query(default=None, description="Schema name"),
+    db: AsyncSession = Depends(get_db),
+):
+    """List stored procedures in the connected database.
+
+    Supported for MySQL and Oracle connections.
+    """
+    resolved = await _resolve_connection(db, connection_id)
+    if resolved is None:
+        return ErrorResponse(message="Connection not found.", code=404)
+
+    connection, config, engine, inspector = resolved
+    explorer = ExplorerService(inspector)
+    procedures = explorer.get_stored_procedures(
+        db_type=connection.db_type, schema=schema
+    )
+    return SuccessResponse(data=procedures)
+
+
+@router.get("/{connection_id}/triggers", response_model=None)
+async def list_triggers(
+    connection_id: int,
+    schema: Optional[str] = Query(default=None, description="Schema name"),
+    db: AsyncSession = Depends(get_db),
+):
+    """List triggers in the connected database.
+
+    Supported for MySQL, PostgreSQL, and Oracle connections.
+    """
+    resolved = await _resolve_connection(db, connection_id)
+    if resolved is None:
+        return ErrorResponse(message="Connection not found.", code=404)
+
+    connection, config, engine, inspector = resolved
+    explorer = ExplorerService(inspector)
+    triggers = explorer.get_triggers(db_type=connection.db_type, schema=schema)
+    return SuccessResponse(data=triggers)
+
+
+@router.get("/{connection_id}/functions", response_model=None)
+async def list_functions(
+    connection_id: int,
+    schema: Optional[str] = Query(default=None, description="Schema name"),
+    db: AsyncSession = Depends(get_db),
+):
+    """List functions in the connected database.
+
+    Currently supported for PostgreSQL connections only.
+    """
+    resolved = await _resolve_connection(db, connection_id)
+    if resolved is None:
+        return ErrorResponse(message="Connection not found.", code=404)
+
+    connection, config, engine, inspector = resolved
+    explorer = ExplorerService(inspector)
+    functions = explorer.get_functions(db_type=connection.db_type, schema=schema)
+    return SuccessResponse(data=functions)
+
+
+@router.get("/{connection_id}/sequences", response_model=None)
+async def list_sequences(
+    connection_id: int,
+    schema: Optional[str] = Query(default=None, description="Schema name"),
+    db: AsyncSession = Depends(get_db),
+):
+    """List sequences in the connected database.
+
+    Supported for PostgreSQL and Oracle connections.
+    """
+    resolved = await _resolve_connection(db, connection_id)
+    if resolved is None:
+        return ErrorResponse(message="Connection not found.", code=404)
+
+    connection, config, engine, inspector = resolved
+    explorer = ExplorerService(inspector)
+    sequences = explorer.get_sequences(db_type=connection.db_type, schema=schema)
+    return SuccessResponse(data=sequences)

@@ -1,6 +1,7 @@
 """Query history service - records, lists, searches, and manages query history."""
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import delete, func, or_, select
@@ -38,6 +39,7 @@ class QueryHistoryService:
         history = QueryHistory(
             connection_id=connection_id,
             sql_text=sql_text,
+            execution_time=datetime.now(timezone.utc),
             duration_ms=duration_ms,
             row_count=row_count,
             status=status,
@@ -183,6 +185,7 @@ class QueryHistoryService:
             "id": entry.id,
             "connection_id": entry.connection_id,
             "sql_text": entry.sql_text,
+            "execution_time": entry.execution_time.isoformat() if entry.execution_time else None,
             "duration_ms": entry.duration_ms,
             "row_count": entry.row_count,
             "status": entry.status,

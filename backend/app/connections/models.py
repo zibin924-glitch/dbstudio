@@ -19,6 +19,7 @@ class ConnectionCreate(BaseModel):
     extra_params: Optional[dict] = Field(default=None, description="Extra connection parameters")
     group_name: str = Field(default="default", description="Connection group name")
     tags: list[str] = Field(default_factory=list, description="Tags for organizing connections")
+    pool_size: int = Field(default=5, ge=1, le=50, description="Connection pool size")
 
 
 class ConnectionUpdate(BaseModel):
@@ -34,6 +35,7 @@ class ConnectionUpdate(BaseModel):
     extra_params: Optional[dict] = Field(default=None)
     group_name: Optional[str] = Field(default=None)
     tags: Optional[list[str]] = Field(default=None)
+    pool_size: Optional[int] = Field(default=None, ge=1, le=50)
 
 
 class ConnectionResponse(BaseModel):

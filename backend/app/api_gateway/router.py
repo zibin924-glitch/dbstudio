@@ -1,7 +1,9 @@
 """FastAPI router for API Gateway management and dynamic execution endpoints."""
 
+import hashlib
 import json
 import logging
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, Query, Request
@@ -36,6 +38,31 @@ dynamic_router = APIRouter(tags=["API Gateway"])
 
 gateway = ApiGateway()
 conn_svc = ConnectionService()
+
+# Simple in-memory response cache: {hash: {"data": ..., "timestamp": ...}}
+_response_cache: dict[str, dict] = {}
+
+
+def _cache_key(api_id: int, params: dict) -> str:
+    """Build a deterministic cache key from API id and validated params."""
+    raw = json.dumps({"api_id": api_id, "params": params}, sort_keys=True, default=str)
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
+def _get_cached(key: str, ttl: int) -> dict | None:
+    """Return cached data if present and not expired, else None."""
+    if ttl <= 0 or key not in _response_cache:
+        return None
+    entry = _response_cache[key]
+    if time.time() - entry["timestamp"] > ttl:
+        del _response_cache[key]
+        return None
+    return entry["data"]
+
+
+def _set_cache(key: str, data: dict) -> None:
+    """Store data in the response cache with the current timestamp."""
+    _response_cache[key] = {"data": data, "timestamp": time.time()}
 
 
 # --- Helpers ---
@@ -241,6 +268,118 @@ async def extract_params(req: ExtractParamsRequest):
     return SuccessResponse(data={"params": params, "sql": req.sql})
 
 
+@router.get("/{api_id}/logs", response_model=None)
+async def get_call_logs(
+    api_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """List call logs for an API definition."""
+    from sqlalchemy import func as sa_func
+
+    # Count total
+    count_stmt = (
+        select(sa_func.count())
+        .select_from(ApiCallLog)
+        .where(ApiCallLog.api_id == api_id)
+    )
+    total = (await db.execute(count_stmt)).scalar() or 0
+
+    # Fetch page
+    stmt = (
+        select(ApiCallLog)
+        .where(ApiCallLog.api_id == api_id)
+        .order_by(ApiCallLog.called_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    result = await db.execute(stmt)
+    logs = result.scalars().all()
+
+    return SuccessResponse(data={
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [
+            {
+                "id": log.id,
+                "api_id": log.api_id,
+                "request_params": log.request_params,
+                "response_status": log.response_status,
+                "duration_ms": log.duration_ms,
+                "caller_ip": log.caller_ip,
+                "called_at": log.called_at.isoformat() if log.called_at else None,
+            }
+            for log in logs
+        ],
+    })
+
+
+@router.get("/{api_id}/stats", response_model=None)
+async def get_api_stats(api_id: int, db: AsyncSession = Depends(get_db)):
+    """Get aggregated call statistics for an API."""
+    from sqlalchemy import case, func as sa_func
+
+    stmt = select(
+        sa_func.count().label("total_calls"),
+        sa_func.avg(ApiCallLog.duration_ms).label("avg_duration_ms"),
+        sa_func.sum(
+            case((ApiCallLog.response_status >= 400, 1), else_=0)
+        ).label("error_count"),
+    ).where(ApiCallLog.api_id == api_id)
+
+    result = await db.execute(stmt)
+    row = result.one()
+
+    total_calls = row.total_calls or 0
+    error_count = row.error_count or 0
+
+    return SuccessResponse(data={
+        "total_calls": total_calls,
+        "avg_duration_ms": round(row.avg_duration_ms, 2) if row.avg_duration_ms else 0,
+        "error_count": error_count,
+        "error_rate": round(error_count / total_calls * 100, 2) if total_calls > 0 else 0,
+    })
+
+
+@router.post("/{api_id}/regenerate-token", response_model=None)
+async def regenerate_token(api_id: int, db: AsyncSession = Depends(get_db)):
+    """Regenerate the authentication token for an API."""
+    api = await db.get(ApiDefinition, api_id)
+    if not api:
+        return ErrorResponse(message="API definition not found.", code=404)
+
+    # Revoke old token
+    if api.auth_token:
+        token_manager.revoke_all_for_api(api.id)
+
+    # Generate new token
+    new_token = token_manager.generate_token()
+    api.auth_token = new_token
+    token_manager.register_token(api.id, new_token)
+
+    await db.commit()
+    await db.refresh(api)
+
+    return SuccessResponse(data={"token": new_token}, message="Token regenerated.")
+
+
+async def reload_tokens_from_db(db: AsyncSession) -> None:
+    """Reload all API tokens from database into TokenManager on startup."""
+    stmt = select(ApiDefinition).where(
+        ApiDefinition.auth_type == "token",
+        ApiDefinition.auth_token.isnot(None),
+    )
+    result = await db.execute(stmt)
+    apis = result.scalars().all()
+
+    for api in apis:
+        token_manager.register_token(api.id, api.auth_token)
+
+    logger.info("Reloaded %d token(s) from database into TokenManager.", len(apis))
+
+
 # --- Dynamic Gateway Endpoint ---
 
 
@@ -271,10 +410,46 @@ async def dynamic_gateway(
     if not api.is_enabled:
         return ErrorResponse(message="This API is currently disabled.", code=503)
 
-    # Rate limiting
+    # IP whitelist check
+    if api.ip_whitelist:
+        try:
+            whitelist = (
+                json.loads(api.ip_whitelist)
+                if isinstance(api.ip_whitelist, str)
+                else api.ip_whitelist
+            )
+        except (json.JSONDecodeError, TypeError):
+            whitelist = []
+
+        if whitelist:
+            client_ip = request.client.host if request.client else None
+            if client_ip not in whitelist:
+                return ErrorResponse(
+                    message=f"IP {client_ip} is not in the whitelist.",
+                    code=403,
+                )
+
+    # Rate limiting - use per-API config if available
+    if api.rate_limit:
+        try:
+            rl_config = (
+                json.loads(api.rate_limit)
+                if isinstance(api.rate_limit, str)
+                else api.rate_limit
+            )
+            rpm = rl_config.get("rpm", 60)
+        except (json.JSONDecodeError, TypeError):
+            rpm = 60
+    else:
+        rpm = 60
+
     rate_key = f"api_{api.id}"
-    if not rate_limiter.is_allowed(rate_key):
-        return ErrorResponse(message="Rate limit exceeded. Please try again later.", code=429)
+    if not rate_limiter.is_allowed(rate_key, max_requests=rpm):
+        return ErrorResponse(
+            message="Rate limit exceeded. Please try again later.",
+            code=429,
+            detail={"remaining": rate_limiter.get_remaining(rate_key, max_requests=rpm)},
+        )
 
     # Authentication
     token = None
@@ -315,6 +490,13 @@ async def dynamic_gateway(
     except ValueError as exc:
         return ErrorResponse(message=f"Parameter validation failed: {exc}", code=400)
 
+    # Check cache
+    if api.cache_seconds > 0:
+        ck = _cache_key(api.id, validated_params)
+        cached = _get_cached(ck, api.cache_seconds)
+        if cached:
+            return SuccessResponse(data=cached)
+
     # Get database connection
     connection = await conn_svc.get_connection_model(db, api.connection_id)
     if connection is None:
@@ -340,6 +522,10 @@ async def dynamic_gateway(
         if len(result_data["data"]) > api.result_limit:
             result_data["data"] = result_data["data"][: api.result_limit]
             result_data["total"] = len(result_data["data"])
+
+        # Store in cache
+        if api.cache_seconds > 0:
+            _set_cache(ck, result_data)
 
         # Log the call
         call_log = ApiCallLog(
