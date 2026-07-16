@@ -122,6 +122,9 @@ class QueryHistory(Base):
     is_favorite: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
 
     # ── Relationships ──────────────────────────────────────────────────────
     connection: Mapped["Connection"] = relationship(
@@ -131,7 +134,7 @@ class QueryHistory(Base):
     def __repr__(self) -> str:
         return (
             f"<QueryHistory id={self.id} status={self.status!r} "
-            f"duration_ms={self.duration_ms}>"
+            f"duration_ms={self.duration_ms} created_at={self.created_at!r}>"
         )
 
 

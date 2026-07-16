@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database.session import init_db
 from app.routers import connections, explorer, query, generator, api_gateway
+from app.api_gateway.router import dynamic_router
 
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ app.include_router(explorer.router, prefix=settings.API_PREFIX)
 app.include_router(query.router, prefix=settings.API_PREFIX)
 app.include_router(generator.router, prefix=settings.API_PREFIX)
 app.include_router(api_gateway.router, prefix=settings.API_PREFIX)
+app.include_router(dynamic_router, prefix=settings.API_PREFIX)
 
 
 # ── Health check ───────────────────────────────────────────────────────────────

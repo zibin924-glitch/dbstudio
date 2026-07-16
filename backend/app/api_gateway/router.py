@@ -61,7 +61,7 @@ def _to_response_dict(api: ApiDefinition) -> dict:
         "result_limit": api.result_limit,
         "cache_seconds": api.cache_seconds,
         "auth_type": api.auth_type,
-        "token": api.token,
+        "token": api.auth_token,
         "is_enabled": api.is_enabled,
         "created_at": api.created_at,
         "updated_at": api.updated_at,
@@ -103,7 +103,7 @@ async def create_api(
         result_limit=data.result_limit,
         cache_seconds=data.cache_seconds,
         auth_type=data.auth_type,
-        token=token,
+        auth_token=token,
         is_enabled=True,
     )
 
@@ -178,11 +178,11 @@ async def update_api(
             # Auto-generate token if switching to token auth
             if value == "token" and old_auth != "token":
                 token = token_manager.generate_token()
-                api.token = token
+                api.auth_token = token
                 token_manager.register_token(api.id, token)
-            elif value != "token" and api.token:
+            elif value != "token" and api.auth_token:
                 token_manager.revoke_all_for_api(api.id)
-                api.token = None
+                api.auth_token = None
         else:
             setattr(api, field, value)
 
@@ -223,7 +223,7 @@ async def delete_api(
         return ErrorResponse(message="API definition not found.", code=404)
 
     # Revoke tokens
-    if api.token:
+    if api.auth_token:
         token_manager.revoke_all_for_api(api.id)
 
     await db.delete(api)
@@ -269,7 +269,7 @@ async def dynamic_gateway(
 
     # Check if API is enabled
     if not api.is_enabled:
-        return ErrorResponse(message="This API is currently disabled.", code=403)
+        return ErrorResponse(message="This API is currently disabled.", code=503)
 
     # Rate limiting
     rate_key = f"api_{api.id}"
@@ -344,10 +344,10 @@ async def dynamic_gateway(
         # Log the call
         call_log = ApiCallLog(
             api_id=api.id,
-            params=json.dumps(validated_params, default=str),
-            response_data=json.dumps({"total": result_data["total"]}, default=str),
+            request_params=json.dumps(validated_params, default=str),
+            response_status=200,
             duration_ms=result_data["duration_ms"],
-            status="success",
+            caller_ip=request.client.host if request.client else None,
         )
         db.add(call_log)
 
@@ -357,10 +357,10 @@ async def dynamic_gateway(
         # Log the failure
         call_log = ApiCallLog(
             api_id=api.id,
-            params=json.dumps(validated_params, default=str),
+            request_params=json.dumps(validated_params, default=str),
+            response_status=500,
             duration_ms=0,
-            status="error",
-            error_message=str(exc),
+            caller_ip=request.client.host if request.client else None,
         )
         db.add(call_log)
 
